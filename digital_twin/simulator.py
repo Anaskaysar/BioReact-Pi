@@ -16,7 +16,19 @@ Run directly for a quick demo:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+# Makes `python digital_twin/simulator.py` (run directly, e.g. an editor's
+# "Run" button) work the same as `python -m digital_twin.simulator` — without
+# this, the `src` import below fails with "ModuleNotFoundError: No module
+# named 'src'" because the script's own directory (not the project root)
+# ends up on sys.path. Harmless when already run as a module or under
+# pytest; it just adds the root a second time in that case.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from src.models.growth_model import GrowthModel
 

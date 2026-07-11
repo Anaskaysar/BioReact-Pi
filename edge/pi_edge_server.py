@@ -1,28 +1,38 @@
 """BioReact-Pi edge service — runs ON the Raspberry Pi (Ubuntu/RaspiOS).
 
-SELF-CONTAINED single file: reads the real DS18B20 temperature over 1-Wire,
-feeds it into an embedded logistic growth model, and serves the result at
-``/api/telemetry`` in the exact JSON shape the dashboard backend expects
-(see ``ui/api/hardware.py::normalize_hardware_payload``).
+Reads the real DS18B20 temperature over 1-Wire, feeds it into an embedded
+logistic growth model, captures real camera frames and scores them for
+visual anomalies with an on-device AI model (see ``color_ai.py``), and
+serves the result at ``/api/telemetry`` in the exact JSON shape the
+dashboard backend expects (see ``ui/api/hardware.py::normalize_hardware_payload``).
 
 The growth math below is a standalone copy of ``src/models/growth_model.py``
-so this file can be dropped onto the Pi by itself (scp/nano) with no other
-project files — you only need Flask installed.
+so the temperature/growth side of this file works standalone. The camera/AI
+side needs its companion module ``color_ai.py`` in the same directory (it's
+a separate file rather than embedded here because the model-download +
+TFLite logic is substantial — copy both files together).
 
-Flow:  DS18B20 --> read_temp() --> GrowthModel --> /api/telemetry --> dashboard
+Flow:
+    DS18B20   --> read_temp()         --> GrowthModel  --\\
+    USB/CSI camera --> capture thread --> ColorAnomalyDetector --> /api/telemetry --> dashboard
 
 Deploy (on the Pi):
-    pip install flask
+    pip install -r edge/requirements.txt
     python3 pi_edge_server.py
 
 Then on the laptop, point the dashboard at the Pi:
     BIOREACTOR_DATA_SOURCE=hardware
     BIOREACTOR_HARDWARE_URL=http://169.254.243.2:8080
     python ui/run_dashboard.py
+
+Camera and AI model are both optional at runtime — if no camera is attached
+or the model can't be loaded, /api/telemetry still serves valid (fallback)
+data rather than crashing. See color_ai.py for the fallback behavior.
 """
 
 from __future__ import annotations
 
+import colorsys
 import glob
 import math
 import os
@@ -33,7 +43,15 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify
+import numpy as np
+from flask import Flask, Response, jsonify
+
+from color_ai import ColorAnomalyDetector
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
 
 # =============================================================================
 # Embedded growth model (standalone copy of src/models/growth_model.py)
@@ -160,6 +178,21 @@ CARRYING_CAPACITY_G_L = 5.0
 FORECAST_HOURS = 0.5  # how far ahead biomass_predicted looks
 
 # =============================================================================
+# Camera + AI color-change detection config
+# =============================================================================
+
+CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", "0"))
+CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
+CAMERA_JPEG_QUALITY = int(os.getenv("CAMERA_JPEG_QUALITY", "80"))
+CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "10"))
+STREAM_FPS = float(os.getenv("CAMERA_STREAM_FPS", "5"))
+# Anomaly scoring runs the AI model, so it's deliberately less frequent than
+# the raw capture loop above — every Nth telemetry tick (TICK_S seconds each),
+# not every frame.
+COLOR_CHECK_EVERY_N_TICKS = int(os.getenv("COLOR_CHECK_EVERY_N_TICKS", "7"))
+
+# =============================================================================
 # DS18B20 reading (proven read_temp, hardened with median smoothing)
 # =============================================================================
 
@@ -210,6 +243,95 @@ def read_temp_smoothed():
 
 
 # =============================================================================
+# Camera capture — background thread, continuously grabs frames for both
+# MJPEG streaming and (less often) AI anomaly scoring.
+# =============================================================================
+
+_camera_lock = threading.Lock()
+_latest_frame_bgr: np.ndarray | None = None  # for the AI model (needs raw pixels)
+_latest_jpeg: bytes | None = None  # pre-encoded for streaming (avoid re-encoding per client)
+_camera_ok = False
+
+color_detector = ColorAnomalyDetector()
+
+
+def _placeholder_jpeg(width: int = CAMERA_WIDTH, height: int = CAMERA_HEIGHT) -> bytes:
+    """A plain dark-gray JPEG shown when no camera is attached — cv2-encoded,
+    so we don't need to add PIL as a second image dependency just for this."""
+    if cv2 is None:
+        # Minimal valid 1x1 JPEG — extremely unlikely path (cv2 is a hard
+        # requirement below for anything camera-related to work at all).
+        return (
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+            b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n"
+            b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f"
+            b"\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00"
+            b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01"
+            b"\x00\x00?\x00\xd2\xcf\x20\xff\xd9"
+        )
+    frame = np.full((height, width, 3), (40, 40, 40), dtype=np.uint8)
+    cv2.putText(frame, "NO CAMERA", (width // 2 - 90, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, (120, 120, 120), 2, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", frame)
+    return buf.tobytes() if ok else b""
+
+
+def _camera_capture_loop() -> None:
+    """Continuously grab frames into the shared buffer. Runs forever in its
+    own thread; if the camera can't be opened, just leaves _camera_ok False
+    and every telemetry/stream read falls back gracefully."""
+    global _latest_frame_bgr, _latest_jpeg, _camera_ok
+
+    if cv2 is None:
+        print("[camera] opencv-python not installed — camera disabled, see edge/requirements.txt")
+        return
+
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+
+    if not cap.isOpened():
+        print(f"[camera] could not open camera index {CAMERA_INDEX} — "
+              "check `ls /dev/video*`, or try picamera2 if this is a CSI ribbon-cable camera")
+        return
+
+    interval = 1.0 / CAMERA_CAPTURE_FPS
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            with _camera_lock:
+                _camera_ok = False
+            time.sleep(interval)
+            continue
+
+        encode_ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, CAMERA_JPEG_QUALITY])
+        with _camera_lock:
+            _latest_frame_bgr = frame
+            _latest_jpeg = buf.tobytes() if encode_ok else _latest_jpeg
+            _camera_ok = True
+        time.sleep(interval)
+
+
+def get_latest_frame():
+    """Thread-safe read of the most recent raw frame (BGR numpy array), or None."""
+    with _camera_lock:
+        return None if _latest_frame_bgr is None else _latest_frame_bgr.copy()
+
+
+def get_latest_jpeg() -> bytes:
+    """Thread-safe read of the most recent pre-encoded JPEG, or a placeholder."""
+    with _camera_lock:
+        if _latest_jpeg is not None:
+            return _latest_jpeg
+    return _placeholder_jpeg()
+
+
+def is_camera_ok() -> bool:
+    with _camera_lock:
+        return _camera_ok
+
+
+# =============================================================================
 # Growth integrator — background thread stepping the model on real temperature
 # =============================================================================
 
@@ -227,7 +349,17 @@ _state = {
     "fan_speed_pct": 0.0,
     "alert": None,
     "sensor_ok": DEVICE_FILE is not None,
+    # Camera / AI color-change detection — filled in by _integrate_loop once
+    # a camera frame is available; sane fallbacks otherwise so /api/telemetry
+    # always serves valid data.
+    "camera_ok": False,
+    "color_rgb_avg": [90, 130, 90],
+    "color_hue_deg": 100.0,
+    "color_drift": 0.0,
+    "baseline_captured": False,
 }
+
+_color_tick_counter = 0
 
 
 def _status_from_temp(temp_c: float) -> str:
@@ -239,10 +371,22 @@ def _status_from_temp(temp_c: float) -> str:
     return "STABLE"
 
 
+def _rgb_and_hue_from_frame(frame_bgr: np.ndarray) -> tuple[list[int], float]:
+    """Real average RGB + hue from a captured frame (replaces the earlier
+    biomass-derived fabrication now that a camera actually exists)."""
+    mean_bgr = frame_bgr.reshape(-1, 3).mean(axis=0)
+    b, g, r = mean_bgr.tolist()
+    hue, _, _ = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return [int(r), int(g), int(b)], round(hue * 360.0, 1)
+
+
 def _integrate_loop():
     """Step biomass forward using the real sensor temperature, forever."""
+    global _color_tick_counter
+
     last = time.time()
     prev_phase = _state["phase"]
+    camera_alert = None
     while True:
         time.sleep(TICK_S)
         now = time.time()
@@ -255,6 +399,36 @@ def _integrate_loop():
 
         actual_rate = model.growth_rate(temp_c, ASSUMED_HUMIDITY_PCT)
         ideal_rate = model.growth_rate(model.opt_temp, model.opt_humidity)
+
+        # Color-change detection: cheap enough to check the camera thread's
+        # buffer every tick, but the AI scoring itself only runs every
+        # COLOR_CHECK_EVERY_N_TICKS ticks — deliberately less often than the
+        # temperature/growth integration above.
+        _color_tick_counter += 1
+        frame = get_latest_frame()
+        camera_ok = frame is not None
+        if camera_ok:
+            rgb_avg, hue_deg = _rgb_and_hue_from_frame(frame)
+            if not _state["baseline_captured"]:
+                color_detector.set_baseline(frame)
+                baseline_captured = True
+                drift = 0.0
+            elif _color_tick_counter % COLOR_CHECK_EVERY_N_TICKS == 0:
+                drift = color_detector.score(frame)
+                baseline_captured = True
+            else:
+                drift = _state["color_drift"]  # keep last computed value between checks
+                baseline_captured = True
+
+            camera_alert = None
+            if drift > 0.35:
+                camera_alert = f"Visual anomaly detected in chamber (score {drift:.2f}) — check for contamination"
+            elif drift > 0.18:
+                camera_alert = f"Chamber color drifting from baseline (score {drift:.2f})"
+        else:
+            rgb_avg, hue_deg, drift = _state["color_rgb_avg"], _state["color_hue_deg"], _state["color_drift"]
+            baseline_captured = _state["baseline_captured"]
+            camera_alert = None
 
         with _state_lock:
             actual = model.update_population(
@@ -279,6 +453,8 @@ def _integrate_loop():
             alert = None
             if not sensor_ok:
                 alert = "Sensor DS18B20 no disponible — usando setpoint"
+            elif camera_alert:
+                alert = camera_alert
             elif phase != prev_phase and phase == "exponential":
                 alert = "Growth phase transitioned to exponential"
             elif phase != prev_phase and phase == "stationary":
@@ -300,6 +476,11 @@ def _integrate_loop():
                 fan_speed_pct=fan,
                 alert=alert,
                 sensor_ok=sensor_ok,
+                camera_ok=camera_ok,
+                color_rgb_avg=rgb_avg,
+                color_hue_deg=hue_deg,
+                color_drift=drift,
+                baseline_captured=baseline_captured,
             )
 
 
@@ -316,12 +497,12 @@ def telemetry():
     with _state_lock:
         s = dict(_state)
 
-    frac = min(1.0, s["biomass_actual"] / CARRYING_CAPACITY_G_L)
-    green = int(120 + 80 * frac)
-
     alerts = []
     if s["alert"]:
-        level = "warning" if not s["sensor_ok"] else "info"
+        # Not sensor-ok and not camera-ok are both instrument problems
+        # (warning); a real color/growth alert with working instruments is
+        # informational.
+        level = "warning" if (not s["sensor_ok"] or not s["camera_ok"]) else "info"
         alerts.append({
             "level": level,
             "message": s["alert"],
@@ -352,14 +533,40 @@ def telemetry():
             },
         },
         "camera": {
+            "camera_ok": s["camera_ok"],
+            "baseline_captured": s["baseline_captured"],
             "color_metric": {
-                "rgb_avg": [90, green, 70],
-                "hue_deg": 100,
-                "drift_from_baseline": round(frac, 3),
+                "rgb_avg": s["color_rgb_avg"],
+                "hue_deg": s["color_hue_deg"],
+                "drift_from_baseline": round(s["color_drift"], 3),
             },
         },
         "alerts": alerts,
     })
+
+
+@app.get("/api/camera/stream")
+def camera_stream():
+    """MJPEG stream of the real camera feed (or a placeholder if unavailable)."""
+
+    def generate():
+        interval = 1.0 / STREAM_FPS
+        boundary = b"--frame"
+        while True:
+            frame_bytes = get_latest_jpeg()
+            yield (
+                boundary + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(frame_bytes)).encode() + b"\r\n\r\n"
+                + frame_bytes + b"\r\n"
+            )
+            time.sleep(interval)
+
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/api/camera/last_frame.jpg")
+def camera_last_frame():
+    return Response(get_latest_jpeg(), mimetype="image/jpeg")
 
 
 @app.get("/data")
@@ -376,6 +583,8 @@ def health():
             "status": "ok",
             "sensor_ok": _state["sensor_ok"],
             "device_file": DEVICE_FILE,
+            "camera_ok": _state["camera_ok"],
+            "color_ai_model_available": color_detector.model_available,
         })
 
 
@@ -386,10 +595,17 @@ def main():
     else:
         print(f"[OK] DS18B20 at {DEVICE_FILE}")
 
+    if cv2 is None:
+        print("[WARN] opencv-python not installed — camera disabled. pip install -r edge/requirements.txt")
+    if not color_detector.model_available:
+        print("[WARN] color AI model unavailable (no internet, or tflite-runtime missing) — "
+              "color_drift will fall back to a histogram-based distance instead of the neural embedding")
+
     threading.Thread(target=_integrate_loop, daemon=True).start()
+    threading.Thread(target=_camera_capture_loop, daemon=True).start()
 
     print(f"[OK] Edge service on http://0.0.0.0:{PORT}  "
-          f"(telemetry: /api/telemetry, target={TARGET_TEMP_C}°C)")
+          f"(telemetry: /api/telemetry, camera: /api/camera/stream, target={TARGET_TEMP_C}°C)")
     app.run(host="0.0.0.0", port=PORT, threaded=True)
 
 

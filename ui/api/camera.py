@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 import time
@@ -97,7 +98,12 @@ async def mjpeg_stream(fps: float = 5.0) -> AsyncIterator[bytes]:
         if settings.is_hardware:
             from .hardware import fetch_hardware_frame
 
-            frame = fetch_hardware_frame() or _render_mock_frame(frame_idx)
+            # fetch_hardware_frame() is a blocking urllib call (up to
+            # hardware_timeout_s per request). Running it directly here would
+            # block the whole asyncio event loop — including the WS telemetry
+            # loop — for that long, 5x/sec while streaming. asyncio.to_thread
+            # runs it on a worker thread instead so the event loop stays free.
+            frame = await asyncio.to_thread(fetch_hardware_frame) or _render_mock_frame(frame_idx)
         else:
             frame = _render_mock_frame(frame_idx)
         frame_idx += 1
@@ -109,21 +115,16 @@ async def mjpeg_stream(fps: float = 5.0) -> AsyncIterator[bytes]:
             + b"\r\n\r\n"
         )
         yield header + frame + b"\r\n"
-        await _async_sleep(interval)
+        await asyncio.sleep(interval)
 
 
-async def _async_sleep(seconds: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
-
-
-def get_last_frame_jpeg() -> bytes:
-    """Single snapshot for /camera/last_frame.jpg."""
+async def get_last_frame_jpeg() -> bytes:
+    """Single snapshot for /camera/last_frame.jpg. Async for the same reason
+    as mjpeg_stream above — the hardware fetch must not block the event loop."""
     if settings.is_hardware:
         from .hardware import fetch_hardware_frame
 
-        frame = fetch_hardware_frame()
+        frame = await asyncio.to_thread(fetch_hardware_frame)
         if frame:
             return frame
     return _render_mock_frame(int(time.time() * 5))

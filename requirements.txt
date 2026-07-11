@@ -9,9 +9,8 @@ Pillow>=10.0.0
 # Testing
 pytest>=8.0.0
 
-# Edge / Pi (uncomment when hardware is wired)
-# RPi.GPIO
-# Adafruit-DHT
+# Edge / Pi deps (flask, opencv, tflite-runtime) live in edge/requirements.txt
+# instead — that installs on the Pi itself, not here on the dashboard machine.
 # python-dotenv
 
 # AI & voice (uncomment when cloud services are wired)

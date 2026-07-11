@@ -35,7 +35,7 @@ async def telemetry_ws(websocket: WebSocket) -> None:
     reset_telemetry()
     try:
         while True:
-            packet = get_telemetry_packet()
+            packet = await get_telemetry_packet()
             await websocket.send_json(packet)
             await asyncio.sleep(settings.poll_interval_s)
     except WebSocketDisconnect:
@@ -52,7 +52,7 @@ async def camera_stream() -> StreamingResponse:
 
 @app.get("/camera/last_frame.jpg")
 async def camera_snapshot() -> Response:
-    return Response(content=get_last_frame_jpeg(), media_type="image/jpeg")
+    return Response(content=await get_last_frame_jpeg(), media_type="image/jpeg")
 
 
 if DASHBOARD_DIR.is_dir():

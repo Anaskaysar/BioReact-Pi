@@ -1,0 +1,15 @@
+# BioReact-Pi edge service — install ON the Raspberry Pi.
+# pip install -r edge/requirements.txt
+
+flask>=3.0.0
+
+# Camera capture (color_ai.py + pi_edge_server.py camera thread)
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+
+# On-device AI model for color-change detection (see edge/color_ai.py).
+# If no prebuilt wheel exists for this Pi's Python/OS combo, color_ai.py
+# still works without it — it falls back to a histogram-based distance
+# instead of the neural-network embedding. Try installing it; if it fails,
+# the edge service still runs fine.
+tflite-runtime>=2.14.0

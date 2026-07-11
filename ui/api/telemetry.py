@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from dataclasses import dataclass, field
@@ -131,12 +132,17 @@ class MockTelemetryState:
 _mock_state = MockTelemetryState()
 
 
-def get_telemetry_packet() -> dict[str, Any]:
+async def get_telemetry_packet() -> dict[str, Any]:
     """Return the next telemetry packet from the configured data source."""
     if settings.is_hardware:
         from .hardware import fetch_hardware_packet
 
-        return fetch_hardware_packet()
+        # fetch_hardware_packet() is a blocking urllib call (up to
+        # hardware_timeout_s). Called directly, it would freeze the whole
+        # FastAPI event loop — including the camera stream — for that long
+        # every tick if the Pi is slow or unreachable. asyncio.to_thread
+        # keeps the blocking I/O off the event loop.
+        return await asyncio.to_thread(fetch_hardware_packet)
     return _mock_state.next_packet()
 
 
