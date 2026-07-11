@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
@@ -20,7 +21,7 @@ app = FastAPI(title="BioReact-Pi UI", version="0.2.0")
 
 
 @app.get("/health")
-async def health() -> dict[str, str | None]:
+async def health() -> Dict[str, Optional[str]]:
     return {
         "status": "ok",
         "data_source": settings.data_source,
