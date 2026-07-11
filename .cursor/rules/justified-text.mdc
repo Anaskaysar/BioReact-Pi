@@ -1,0 +1,35 @@
+---
+description: Use justified text alignment in prose and UI copy
+alwaysApply: true
+---
+
+# Justified Text
+
+The user prefers justified text in files and written content.
+
+## Markdown and documentation
+
+- Wrap narrative prose paragraphs in `<p align="justify">...</p>` so they render justified on GitHub and in previews.
+- Do not justify headings, code blocks, tables, lists, or mermaid diagrams.
+- Keep technical structures (tables, bullet lists, numbered steps) left-aligned for readability.
+
+## Web and UI
+
+- Apply `text-align: justify` to body copy, descriptions, and long-form text in HTML/CSS/React.
+- Pair with `hyphens: auto` or `text-wrap: pretty` where supported for cleaner justified lines.
+
+## Assistant responses
+
+- Write explanatory prose in fully justified paragraphs when formatting allows.
+
+## Example
+
+```markdown
+## Solution
+
+<p align="justify">
+BioReact-Pi acts as the brain of a bioreactor. It reads temperature from a sensor,
+runs a live logistic growth model in Python to predict future biomass yield, and
+uses PID control to dynamically adjust a heater and nutrient feeder.
+</p>
+```

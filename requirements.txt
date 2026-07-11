@@ -1,0 +1,19 @@
+# BioReact-Pi — cloud dashboard & API
+
+# Cloud API & dashboard
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+websockets>=12.0
+Pillow>=10.0.0
+
+# Edge / Pi (uncomment when hardware is wired)
+# RPi.GPIO
+# Adafruit-DHT
+
+# Database (uncomment when Atlas is connected)
+# pymongo
+# python-dotenv
+
+# AI & voice (uncomment when cloud services are wired)
+# google-generativeai
+# elevenlabs

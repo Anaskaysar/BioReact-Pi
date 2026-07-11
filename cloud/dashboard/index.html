@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioReact-Pi Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+  <header id="status-banner" class="banner banner--stable">
+    <div class="banner__brand">
+      <span class="banner__logo"><span class="banner__dot" id="live-dot"></span>BioReact-Pi</span>
+      <span class="banner__subtitle">Edge Bioreactor Controller</span>
+    </div>
+    <div class="banner__status">
+      <span id="status-label" class="banner__state">STABLE</span>
+      <span id="phase-label" class="banner__phase">lag phase</span>
+    </div>
+    <div id="alert-bar" class="banner__alert" hidden></div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel panel--chart">
+      <h2 class="panel__title">Biomass Growth</h2>
+      <p class="panel__subtitle">Predicted vs. ideal vs. actual (g/L)</p>
+      <div class="chart-wrap">
+        <canvas id="biomass-chart"></canvas>
+      </div>
+    </section>
+
+    <section class="panel panel--viz3d">
+      <h2 class="panel__title">Growth Visualization</h2>
+      <p class="panel__subtitle">Cell count &amp; spread track live biomass — drag to orbit</p>
+      <div id="viz3d-container"></div>
+    </section>
+
+    <section class="panel panel--camera">
+      <h2 class="panel__title">Chamber Camera</h2>
+      <div class="camera-wrap">
+        <img id="camera-feed" src="/camera/stream" alt="Live chamber camera feed" />
+        <div id="color-indicator" class="color-indicator">
+          <div class="color-indicator__swatch" id="color-swatch"></div>
+          <div class="color-indicator__info">
+            <span class="color-indicator__label">Color drift</span>
+            <span id="color-drift" class="color-indicator__value">0.00</span>
+            <span id="color-hue" class="color-indicator__hue">hue 88°</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel panel--metrics">
+      <h2 class="panel__title">Core Metrics</h2>
+      <div class="metrics-grid">
+        <article class="metric-card metric-card--temp">
+          <span class="metric-card__label">Temperature</span>
+          <span id="metric-temp" class="metric-card__value">--</span>
+          <span class="metric-card__unit">°C</span>
+        </article>
+        <article class="metric-card metric-card--humidity">
+          <span class="metric-card__label">Humidity</span>
+          <span id="metric-humidity" class="metric-card__value">--</span>
+          <span class="metric-card__unit">%</span>
+        </article>
+        <article class="metric-card metric-card--fan">
+          <span class="metric-card__label">Fan Speed</span>
+          <span id="metric-fan" class="metric-card__value">--</span>
+          <span class="metric-card__unit">%</span>
+          <div class="metric-card__bar"><div id="bar-fan" class="metric-card__bar-fill"></div></div>
+        </article>
+        <article class="metric-card metric-card--heater">
+          <span class="metric-card__label">Heater Power</span>
+          <span id="metric-heater" class="metric-card__value">--</span>
+          <span class="metric-card__unit">%</span>
+          <div class="metric-card__bar"><div id="bar-heater" class="metric-card__bar-fill"></div></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="connection-status" class="footer__conn footer__conn--disconnected">Disconnected</span>
+    <span class="footer__hint">WebSocket telemetry · MJPEG camera · QNX edge</span>
+  </footer>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
