@@ -189,8 +189,7 @@ BioReact-Pi/
 | Arkesh | Growth model & control |
 | Anas | UI & digital twin |
 | Anna | Bio Med |
-| | |
-| | |
+
 
 <p align="justify">
 Hackathon pitch, judging alignment, demo script, and sponsor integrations: <a href="docs/PITCH.md">docs/PITCH.md</a>
