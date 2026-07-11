@@ -59,7 +59,7 @@ Open **http://localhost:8000** — the same dashboard now reflects the real sens
 
 ## Dashboard Features
 
-![BioReact-Pi web dashboard](docs/ui-dashboard.png)
+![BioReact-Pi web dashboard](docs/dashboard.png)
 
 | Panel | What it shows |
 |-------|----------------|
