@@ -20,7 +20,7 @@ app = FastAPI(title="BioReact-Pi UI", version="0.2.0")
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, str | None]:
     return {
         "status": "ok",
         "data_source": settings.data_source,
