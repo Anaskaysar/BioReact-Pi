@@ -51,14 +51,18 @@ class GrowthModel:
     logic itself.
     """
 
-    # Temperature thresholds (°C)
-    min_temp: float = 4.0       # below this: death
-    min_growth: float = 10.0    # below this: very slow growth
+    # Temperature thresholds (°C) — E. coli reference values: growth is
+    # positive strictly between min_growth and max_temp, zero at those two
+    # boundaries, peaks at opt_temp, and goes negative (death) outside them.
+    min_temp: float = 2.0       # deep-cold anchor, well below min_growth: dying
+    min_growth: float = 8.0     # growth range floor — zero growth right at this point
     opt_temp: float = 37.0      # peak growth
-    max_growth: float = 45.0    # above this: decline starts
-    max_temp: float = 48.0      # above this: rapid death
+    max_growth: float = 45.0    # past this: still positive but declining fast
+    max_temp: float = 50.0      # growth range ceiling — zero growth right at this point
 
-    # Humidity thresholds (%)
+    # Humidity thresholds (%) — only meaningful when you actually have a
+    # humidity reading; see growth_rate()'s humidity_pct=None behavior for
+    # what happens when you don't (e.g. no DHT22 wired up).
     min_humidity: float = 40.0  # below this: stunted growth
     opt_humidity: float = 80.0  # optimal humidity
 
@@ -77,12 +81,12 @@ class GrowthModel:
         self._temp_points = [
             (self.min_temp - 6, -0.5),
             (self.min_temp, -0.3),
-            (self.min_growth, 0.05),
-            (20.0, 0.5),
+            (self.min_growth, 0.0),
+            ((self.min_growth + self.opt_temp) / 2, 0.55),
             (self.opt_temp, 1.0),
-            (self.max_growth, 0.0),
-            (self.max_temp, -1.0),
-            (self.max_temp + 7, -3.0),
+            (self.max_growth, 0.35),
+            (self.max_temp, 0.0),
+            (self.max_temp + 5, -1.5),
         ]
         self._humidity_points = [
             (0.0, 0.02),
@@ -94,7 +98,7 @@ class GrowthModel:
         ]
 
     def temperature_effect(self, temp_c: float) -> float:
-        """Temperature effect on growth (~-3 to 1). Continuous across the full range."""
+        """Temperature effect on growth (~-1.5 to 1). Continuous across the full range."""
         return _interpolate(temp_c, self._temp_points)
 
     def humidity_effect(self, humidity_pct: float) -> float:
@@ -102,18 +106,21 @@ class GrowthModel:
         clamped = max(0.0, min(100.0, humidity_pct))
         return _interpolate(clamped, self._humidity_points)
 
-    def growth_rate(self, temp_c: float, humidity_pct: float) -> float:
+    def growth_rate(self, temp_c: float, humidity_pct: float | None = None) -> float:
         """Growth rate (divisions/hour). Positive = growth, negative = death.
 
         Death is driven by temperature only — dry conditions stunt growth,
-        they don't kill outright.
+        they don't kill outright. ``humidity_pct=None`` (the default) means
+        "no humidity sensor" — the humidity term is left neutral (1.0, no
+        penalty) rather than assuming a specific reading we don't actually
+        have.
         """
         temp_eff = self.temperature_effect(temp_c)
-        humidity_eff = self.humidity_effect(humidity_pct)
 
         if temp_eff < 0:
             return temp_eff
 
+        humidity_eff = 1.0 if humidity_pct is None else self.humidity_effect(humidity_pct)
         return self.max_growth_rate * temp_eff * humidity_eff
 
     def update_population(

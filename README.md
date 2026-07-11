@@ -15,10 +15,14 @@ Industrial bioreactors grow bacteria for medicine, insulin, clean meat, and biof
 **Core capabilities:**
 
 - Real DS18B20 temperature sensor, read over 1-Wire on a Raspberry Pi (Ubuntu/Raspberry Pi OS)
-- Logistic growth model (temperature- and humidity-driven) predicting biomass in real time — same formula used on the Pi and in the browser
+- Live camera feed (Pi Camera Module via `picamera2`) — the dashboard's camera panel shows the real chamber view, not a placeholder
+- Logistic growth model calibrated to the E. coli reference range — grows strictly between **8°C and 50°C**, peaks at **37°C** — predicting biomass in real time from temperature alone (no assumed/guessed humidity). The exact same formula runs on the Pi and in the browser
+- A **simulated pH indicator**: real color extracted from the camera's ROI, interpreted through the same phenol-red colorimetric convention used in real cell-culture media (yellow=acidic, red/pink=optimal, magenta=alkaline)
+- An on-demand **AI advisor** (Gemini) — reads the current temperature/phase/biomass/pH and gives one concrete recommendation
 - Live web dashboard: biomass curve, specific growth-rate (μ) chart, animated petri-dish colony visualization, chamber camera panel, core metrics
 - **Real mode vs. Demo mode** — real mode shows true instrument-paced growth from the actual sensor; demo mode runs the *same* biology formula on a fast-forwarded clock so a hair dryer on the sensor visibly races the plate to full coverage within seconds, for live demos
 - Mock or hardware data sources, switchable via environment variables — the dashboard looks and behaves identically either way
+- **Honest about disconnection** — if the Pi is unreachable, the dashboard says so explicitly (a distinct "DISCONNECTED" state) instead of silently showing stale or canned numbers
 - Digital twin (`digital_twin/simulator.py`) for offline what-if growth simulation
 
 ## Quick Start
@@ -63,11 +67,12 @@ Open **http://localhost:8000** — the same dashboard now reflects the real sens
 
 | Panel | What it shows |
 |-------|----------------|
-| **Chamber camera** | Live/synthetic camera feed with a color-drift indicator (culture color vs. baseline) |
+| **Chamber camera** | Live feed from the Pi Camera Module (falls back to a synthetic render in mock mode, or a clearly-labeled "CAMERA OFFLINE" placeholder if the Pi is unreachable) — plus a color-drift indicator and a simulated pH readout (phenol-red convention, from the camera's real ROI color) |
 | **Growth visualization** | Top-down animated petri dish — tiny colony dots appear and the plate fills as biomass grows, colored by growth phase (amber = lag, green = exponential, blue = stationary) |
 | **Biomass growth** | Predicted / ideal / actual biomass (g/L) over time |
 | **Specific growth rate (μ)** | ln-derivative of biomass — the standard microbiology way to read growth kinetics; peaks in exponential phase, flattens at stationary |
-| **Core metrics** | Temperature, humidity, fan speed, heater power |
+| **Core metrics** | Temperature, humidity, fan speed, heater power — shown as `--` instead of a number whenever the Pi is disconnected |
+| **AI advisor** | Click "Ask AI" for one concrete recommendation from Gemini, based on the current temperature/phase/biomass/pH (needs `GEMINI_API_KEY`, see below) |
 
 ### Real mode vs. Demo mode
 
@@ -78,6 +83,16 @@ A toggle in the top-right of the dashboard switches between two ways of driving 
 - **Real mode** (default) — biomass comes straight from the Pi's edge service, integrated at true pace against the real sensor reading. This is what the culture is actually doing.
 - **Demo mode** — runs the identical formula client-side, but on an accelerated clock, still driven by the real temperature reading. Point a hair dryer at the DS18B20 and watch the petri dish fill up within ~20 seconds instead of real-world hours. A **"Demo version"** badge appears whenever this mode is active, so it's never mistaken for real data.
 
+### AI advisor setup (optional)
+
+Get a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), then before starting the dashboard:
+
+```bash
+export GEMINI_API_KEY=your-key-here
+```
+
+Without it, the "Ask AI" button just shows a clear "not configured" message — nothing else on the dashboard depends on this.
+
 ## Hardware Setup
 
 ### Bill of materials (what's actually wired up)
@@ -86,7 +101,8 @@ A toggle in the top-right of the dashboard switches between two ways of driving 
 |-----------|---------|--------|
 | Raspberry Pi (Ubuntu / Raspberry Pi OS) | Edge controller | Working |
 | DS18B20 (1-Wire digital temp sensor) | Chamber temperature | Working — see wiring below |
-| DHT22 (humidity) | Chamber humidity | **Not wired yet** — dashboard reports 0%, model assumes 80% internally |
+| Pi Camera Module (CSI ribbon) | Chamber view + pH color detection | Working — served via `picamera2`, see below |
+| DHT22 (humidity) | Chamber humidity | **Not wired yet** — dashboard reports 0%, growth model applies no humidity term at all (not a guess) |
 | Heater / cooling fan | Actuation | **Not wired yet** — dashboard reports 0% power, no physical control loop yet |
 | Acrylic chamber | Enclosure | Erlenmeyer flask with culture medium |
 
@@ -97,6 +113,16 @@ A toggle in the top-right of the dashboard switches between two ways of driving 
 | DATA | GPIO17 (via extension cable into a breadboard — do **not** hand-hold the wires, see [CLAUDE.md](CLAUDE.md) for why) |
 | VCC | 3.3V |
 | GND | GND |
+
+### Camera setup
+
+The Pi Camera Module connects via its CSI ribbon cable (not GPIO). No pin table needed — just make sure it's enabled and `picamera2` is installed:
+
+```bash
+sudo apt install python3-picamera2
+```
+
+`edge/pi_edge_server.py` auto-detects it at startup and prints `[OK] Camera streaming at 640x480`. If no camera is attached (or the library is missing), it prints a `[WARN]` and everything else — temperature, growth model — keeps working normally; only `/api/camera/stream` returns a 503.
 
 ### Raspberry Pi OS setup
 
@@ -115,11 +141,11 @@ A toggle in the top-right of the dashboard switches between two ways of driving 
 ```bash
 scp edge/pi_edge_server.py user@<pi-ip>:~/
 ssh user@<pi-ip>
-sudo apt install python3-flask
+sudo apt install python3-flask python3-picamera2   # picamera2 only needed if a camera is attached
 python3 pi_edge_server.py
 ```
 
-It auto-detects the DS18B20, integrates the growth model against the real reading every second, and serves the result at `GET /api/telemetry` in the JSON shape the dashboard expects. See the file's own docstring for the full protocol and every tunable environment variable (`TARGET_TEMP`, `SIM_HOURS_PER_SECOND`, `ASSUMED_HUMIDITY`, etc).
+It auto-detects the DS18B20 and camera, integrates the growth model against the real reading every second, and serves telemetry at `GET /api/telemetry` and the camera at `GET /api/camera/stream` in the shapes the dashboard expects. See the file's own docstring for the full protocol and every tunable environment variable (`TARGET_TEMP`, `SIM_HOURS_PER_SECOND`, `CAMERA_WIDTH`, `CAMERA_HEIGHT`, etc).
 
 ### Connecting laptop ↔ Pi over Ethernet
 
@@ -135,26 +161,30 @@ Then SSH in with `ssh user@169.254.243.2` (or PuTTY on Windows), and point `BIOR
 ## Architecture
 
 ```
-┌─────────────────────┐        GET /api/telemetry        ┌──────────────────────┐        WebSocket        ┌────────────────┐
-│   Raspberry Pi       │ ────────────────────────────────▶│  Dashboard backend    │ ───────────────────────▶│   Browser       │
-│  DS18B20 (1-Wire)    │      (every ~1s, port 8080)       │  FastAPI (port 8000)  │     (every ~1s)          │   Dashboard UI  │
-│  edge/pi_edge_server │                                   │  ui/api/*             │                          │   Chart.js +    │
-│  .py + GrowthModel   │                                   │                       │                          │   Three.js      │
-└─────────────────────┘                                   └──────────────────────┘                          └────────────────┘
+┌─────────────────────┐   GET /api/telemetry, /api/camera/stream   ┌──────────────────────┐        WebSocket        ┌────────────────┐
+│   Raspberry Pi       │ ───────────────────────────────────────── ▶│  Dashboard backend    │ ───────────────────────▶│   Browser       │
+│  DS18B20 (1-Wire)    │        (every ~1s, port 8080)               │  FastAPI (port 8000)  │     (every ~1s)          │   Dashboard UI  │
+│  Camera Module       │                                             │  ui/api/*             │──── POST /api/advisor ─▶│   Chart.js +    │
+│  edge/pi_edge_server │                                             │                       │        (Gemini)         │   Three.js      │
+│  .py + GrowthModel   │                                             │                       │                          │                 │
+└─────────────────────┘                                             └──────────────────────┘                          └────────────────┘
 ```
 
 **Data flow:**
 
-1. `edge/pi_edge_server.py` reads the DS18B20 (median-smoothed over the last 5 reads to reject wiring noise), integrates the growth model against that real temperature every second, and serves the result as JSON.
-2. `ui/api/hardware.py` polls that endpoint and normalizes it into the dashboard's WebSocket packet shape (or `ui/api/telemetry.py` generates the same shape from a mock simulation when no hardware is configured).
-3. `ui/dashboard/js/app.js` renders it: Chart.js for the biomass/growth-rate curves, Three.js for the petri dish, plus the metric cards and camera panel — all from the one WebSocket stream.
+1. `edge/pi_edge_server.py` reads the DS18B20 (median-smoothed over the last 5 reads to reject wiring noise) and the camera, integrates the growth model against that real temperature every second, and serves both as JSON/JPEG.
+2. `ui/api/hardware.py` polls those endpoints (off the main event loop — see [CLAUDE.md §5.9](CLAUDE.md) for why that matters) and normalizes telemetry into the dashboard's WebSocket packet shape (or `ui/api/telemetry.py` generates the same shape from a mock simulation when no hardware is configured). `ui/api/color_ph.py` extracts real color from the camera's ROI and overlays a simulated pH reading onto that packet.
+3. `ui/dashboard/js/app.js` renders it: Chart.js for the biomass/growth-rate curves, Three.js for the petri dish, plus the metric cards and camera panel — all from the one WebSocket stream. Clicking "Ask AI" makes a separate one-off REST call to `ui/api/advisor.py`, which asks Gemini for a recommendation.
 
 ## Tech Stack
 
 | Component | Role |
 |-----------|------|
 | **Python / Flask** | Edge service on the Pi (`edge/pi_edge_server.py`) |
+| **picamera2** | Pi Camera Module capture |
 | **Python / FastAPI** | Dashboard backend — WebSocket telemetry, camera proxy, static files |
+| **Pillow** | Real-time ROI color extraction for the simulated pH indicator |
+| **google-genai** | Gemini AI advisor (current SDK — `google-generativeai` is deprecated) |
 | **Chart.js** | Biomass and specific growth-rate charts |
 | **Three.js** | Petri dish growth visualization (orthographic camera, `PointsMaterial` colony dots) |
 | **WebSocket + MJPEG** | Live telemetry and camera streaming to the browser |
@@ -184,8 +214,10 @@ BioReact-Pi/
     ├── config.py                 # Mock vs. hardware data source (env vars)
     ├── .env.example              # Hardware connection settings
     ├── data/
-    │   └── demo_telemetry.json   # Sample edge payload shape
+    │   └── demo_telemetry.json   # Sample edge payload shape (reference only, not a live fallback)
     ├── api/                      # FastAPI — telemetry, camera, static files
+    │   ├── advisor.py             # Gemini AI advisor
+    │   └── color_ph.py            # Real camera color -> simulated phenol-red pH
     └── dashboard/                # HTML / CSS / JS frontend
         ├── index.html
         ├── css/style.css
@@ -194,8 +226,10 @@ BioReact-Pi/
 
 ## Known Limitations / Roadmap
 
-- **Humidity** — no DHT22 wired yet. Dashboard reports 0% (honest — not measured); the growth model assumes 80% internally so the biomass curve stays representative until the sensor is added.
+- **Humidity** — no DHT22 wired yet. Dashboard reports 0% (honest — not measured), and the growth model applies no humidity term at all rather than guessing a percentage.
 - **Actuators** — no heater/fan hardware wired yet. Dashboard reports 0% power rather than simulating a value, so nothing on screen is faked.
+- **Camera framing** — the camera shows whatever the Pi happens to be pointed at; the pH reading is only meaningful once it's aimed at the actual flask/chamber.
+- **AI advisor** — needs a `GEMINI_API_KEY` (see [above](#ai-advisor-setup-optional)); without one it just says so.
 - **QNX** — the original hackathon requirement targeted QNX on a Pi 5, but 1-Wire bit-banging over QNX's GPIO IPC resource manager proved unreliable within the hackathon's time budget (full root-cause writeup in [CLAUDE.md](CLAUDE.md)). The team pivoted to Ubuntu/Raspberry Pi OS, which handles the DS18B20 with a native kernel driver (`w1-gpio`/`w1-therm`) instead of hand-rolled timing-critical bit-banging.
 
 ## Team

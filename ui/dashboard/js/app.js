@@ -28,6 +28,13 @@ const colorDrift = $("color-drift");
 const colorHue = $("color-hue");
 const colorIndicator = $("color-indicator");
 
+const phIndicator = $("ph-indicator");
+const phValue = $("ph-value");
+const phStatus = $("ph-status");
+
+const advisorText = $("advisor-text");
+const advisorButton = $("advisor-button");
+
 // ── Chart.js biomass line chart ──
 
 // Match the charts' axis/legend text to the rest of the UI (IBM Plex),
@@ -497,8 +504,25 @@ const viz3d = initViz3D();
 // is bigger — so a hair dryer on the sensor now visibly races the plate
 // toward full coverage within seconds instead of minutes, for live demos.
 
+// Mirrors src/models/growth_model.py's GrowthModel exactly (same reference
+// numbers: E. coli grows strictly between 8C and 50C, zero at those two
+// boundaries, peaks at 37C). If you tune the Python model, update this too.
+const MIN_TEMP = 2.0;
+const MIN_GROWTH = 8.0;
+const OPT_TEMP = 37.0;
+const MAX_GROWTH_T = 45.0;
+const MAX_TEMP = 50.0;
+const OPT_HUMIDITY = 80.0;
+
 const TEMP_POINTS = [
-  [-2, -0.5], [4, -0.3], [10, 0.05], [20, 0.5], [37, 1.0], [45, 0.0], [48, -1.0], [55, -3.0],
+  [MIN_TEMP - 6, -0.5],
+  [MIN_TEMP, -0.3],
+  [MIN_GROWTH, 0.0],
+  [(MIN_GROWTH + OPT_TEMP) / 2, 0.55],
+  [OPT_TEMP, 1.0],
+  [MAX_GROWTH_T, 0.35],
+  [MAX_TEMP, 0.0],
+  [MAX_TEMP + 5, -1.5],
 ];
 const HUMIDITY_POINTS = [
   [0, 0.02], [20, 0.1], [40, 0.4], [60, 0.7], [80, 1.0], [100, 1.0],
@@ -524,10 +548,16 @@ function interpolate(x, points) {
   return points[points.length - 1][1];
 }
 
-function growthRate(tempC, humidityPct) {
+// humidityPct omitted/null means "no sensor" -> neutral (no penalty),
+// mirroring GrowthModel.growth_rate(temp_c, humidity_pct=None) in Python.
+// We only have a temperature sensor, so demo mode's "actual" curve never
+// passes a humidity value — no assumed/hardcoded percentage.
+function growthRate(tempC, humidityPct = null) {
   const tempEff = interpolate(tempC, TEMP_POINTS);
   if (tempEff < 0) return tempEff;
-  const humEff = interpolate(Math.max(0, Math.min(100, humidityPct)), HUMIDITY_POINTS);
+  const humEff = humidityPct === null
+    ? 1.0
+    : interpolate(Math.max(0, Math.min(100, humidityPct)), HUMIDITY_POINTS);
   return MAX_GROWTH_RATE * tempEff * humEff;
 }
 
@@ -558,7 +588,6 @@ function phaseFromRate(rate) {
 // (~2.4/h) fills it in ~18-20s — slow enough to read as "growing", fast
 // enough to react visibly within a live demo.
 const DEMO_HOURS_PER_SECOND = 0.15;
-const DEMO_HUMIDITY_PCT = 80.0;
 
 let vizMode = "real"; // "real" | "demo"
 let demoBiomass = 0.05;
@@ -580,8 +609,11 @@ function computeEffectivePacket(packet) {
   const dtHours = Math.max(0, packet.timestamp - demoLastRealTimestamp) * DEMO_HOURS_PER_SECOND;
   demoLastRealTimestamp = packet.timestamp;
 
-  const rate = growthRate(packet.temp, DEMO_HUMIDITY_PCT);
-  const idealRate = growthRate(37.0, 80.0); // model optimum, best-case reference curve
+  // actual: real temperature reading, no humidity assumption — we only
+  // have a temperature sensor, same honesty rule as the Pi's real mode.
+  const rate = growthRate(packet.temp);
+  // ideal: best-case reference curve (optimal temp AND optimal humidity)
+  const idealRate = growthRate(OPT_TEMP, OPT_HUMIDITY);
   demoBiomass = updatePopulation(demoBiomass, rate, dtHours);
   demoIdeal = updatePopulation(demoIdeal, idealRate, dtHours);
   const predicted = updatePopulation(demoBiomass, rate, 0.15);
@@ -625,7 +657,7 @@ modeToggleBtn.addEventListener("click", () => {
 
 // ── UI update from telemetry packet ──
 
-const STATUS_CLASSES = ["banner--heating", "banner--stable", "banner--cooling"];
+const STATUS_CLASSES = ["banner--heating", "banner--stable", "banner--cooling", "banner--disconnected"];
 
 function updateDashboard(packet) {
   // Banner
@@ -642,13 +674,17 @@ function updateDashboard(packet) {
     alertBar.hidden = true;
   }
 
-  // Metric cards
-  metricTemp.textContent = packet.temp.toFixed(1);
-  metricHumidity.textContent = packet.humidity.toFixed(1);
-  metricFan.textContent = Math.round(packet.fan_speed);
-  metricHeater.textContent = Math.round(packet.heater_power);
-  barFan.style.width = `${packet.fan_speed}%`;
-  barHeater.style.width = `${packet.heater_power}%`;
+  // Metric cards — hardware_connected is only present (and only ever
+  // false) in hardware mode when the Pi is unreachable; showing "--"
+  // instead of a stale/zeroed number makes that unambiguous rather than
+  // letting a frozen or zeroed reading look like a live one.
+  const connected = packet.hardware_connected !== false;
+  metricTemp.textContent = connected ? packet.temp.toFixed(1) : "--";
+  metricHumidity.textContent = connected ? packet.humidity.toFixed(1) : "--";
+  metricFan.textContent = connected ? Math.round(packet.fan_speed) : "--";
+  metricHeater.textContent = connected ? Math.round(packet.heater_power) : "--";
+  barFan.style.width = `${connected ? packet.fan_speed : 0}%`;
+  barHeater.style.width = `${connected ? packet.heater_power : 0}%`;
 
   // Color drift overlay (from same WebSocket packet)
   if (packet.color_metric) {
@@ -665,6 +701,23 @@ function updateDashboard(packet) {
     }
   }
 
+  // Simulated pH (phenol red indicator) — only present once a real camera
+  // frame has been analyzed (see ui/api/color_ph.py); stays hidden in mock
+  // mode or before the first real frame arrives.
+  if (packet.ph_indicator) {
+    const { ph, status, label } = packet.ph_indicator;
+    phIndicator.hidden = false;
+    phValue.textContent = ph.toFixed(2);
+    phStatus.textContent = status;
+    phStatus.title = label;
+    phIndicator.classList.remove(
+      "ph-indicator--acidic",
+      "ph-indicator--optimal",
+      "ph-indicator--alkaline"
+    );
+    phIndicator.classList.add(`ph-indicator--${status}`);
+  }
+
   // Charts + 3D — biomass/growth reflect whichever mode is active (real
   // instrument pace vs. accelerated demo formula); temperature, humidity,
   // fan/heater and the banner above always show the true sensor readings.
@@ -673,6 +726,31 @@ function updateDashboard(packet) {
   pushGrowthRatePoint(vizPacket);
   viz3d.updateViz(vizPacket);
 }
+
+// ── AI Advisor — on-demand only, never auto-called (see main.py's comment
+// on /api/advisor/feedback for why: avoids burning API quota every second).
+
+advisorButton.addEventListener("click", async () => {
+  advisorButton.disabled = true;
+  advisorText.textContent = "Asking Gemini…";
+  advisorText.className = "advisor-text advisor-text--loading";
+  try {
+    const res = await fetch("/api/advisor/feedback", { method: "POST" });
+    const data = await res.json();
+    if (data.advice) {
+      advisorText.textContent = data.advice;
+      advisorText.className = "advisor-text";
+    } else {
+      advisorText.textContent = data.error || "No response from the advisor.";
+      advisorText.className = "advisor-text advisor-text--error";
+    }
+  } catch (err) {
+    advisorText.textContent = `Request failed: ${err.message}`;
+    advisorText.className = "advisor-text advisor-text--error";
+  } finally {
+    advisorButton.disabled = false;
+  }
+});
 
 // ── WebSocket connection with auto-reconnect ──
 

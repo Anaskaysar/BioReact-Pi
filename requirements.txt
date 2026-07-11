@@ -14,6 +14,11 @@ pytest>=8.0.0
 # Adafruit-DHT
 # python-dotenv
 
-# AI & voice (uncomment when cloud services are wired)
-# google-generativeai
+# AI advisor — optional; the "Ask AI" button degrades to a clear
+# "not configured" message without it (see ui/api/advisor.py).
+# NOTE: google-generativeai is deprecated/unmaintained — this is the
+# current Gemini SDK.
+google-genai>=0.3.0
+
+# Voice (uncomment when wired)
 # elevenlabs

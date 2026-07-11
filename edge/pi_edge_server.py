@@ -3,27 +3,37 @@
 SELF-CONTAINED single file: reads the real DS18B20 temperature over 1-Wire,
 feeds it into an embedded logistic growth model, and serves the result at
 ``/api/telemetry`` in the exact JSON shape the dashboard backend expects
-(see ``ui/api/hardware.py::normalize_hardware_payload``).
+(see ``ui/api/hardware.py::normalize_hardware_payload``). Also serves a
+plain (no detection/analysis) camera snapshot at ``/api/camera/stream`` if
+a Pi Camera Module is attached — see the "Camera" section below.
 
 The growth math below is a standalone copy of ``src/models/growth_model.py``
 so this file can be dropped onto the Pi by itself (scp/nano) with no other
-project files — you only need Flask installed.
+project files — you only need Flask (and, for the camera, picamera2)
+installed.
 
 Flow:  DS18B20 --> read_temp() --> GrowthModel --> /api/telemetry --> dashboard
+       Pi Camera Module --> capture_jpeg() --> /api/camera/stream --> dashboard
 
 Deploy (on the Pi):
-    pip install flask
+    sudo apt install python3-flask python3-picamera2
     python3 pi_edge_server.py
 
 Then on the laptop, point the dashboard at the Pi:
     BIOREACTOR_DATA_SOURCE=hardware
     BIOREACTOR_HARDWARE_URL=http://169.254.243.2:8080
     python ui/run_dashboard.py
+
+Camera is optional — if picamera2 isn't installed or no camera is attached,
+/api/camera/stream returns 503 and the rest of the service (temperature,
+growth model) keeps working normally; the dashboard falls back to its
+synthetic chamber image automatically (see ui/api/camera.py).
 """
 
 from __future__ import annotations
 
 import glob
+import io
 import math
 import os
 import statistics
@@ -33,7 +43,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify
+from flask import Flask, Response, jsonify
 
 # =============================================================================
 # Embedded growth model (standalone copy of src/models/growth_model.py)
@@ -60,13 +70,18 @@ def _interpolate(x: float, points: list) -> float:
 
 @dataclass
 class GrowthModel:
-    """Temperature/humidity-driven logistic growth model for a bacterial culture."""
+    """Temperature/humidity-driven logistic growth model for a bacterial culture.
 
-    min_temp: float = 4.0
-    min_growth: float = 10.0
+    E. coli reference range: growth is positive strictly between min_growth
+    (8C) and max_temp (50C), zero at those two boundaries, peaks at
+    opt_temp (37C), negative (death) outside them.
+    """
+
+    min_temp: float = 2.0
+    min_growth: float = 8.0
     opt_temp: float = 37.0
     max_growth: float = 45.0
-    max_temp: float = 48.0
+    max_temp: float = 50.0
     min_humidity: float = 40.0
     opt_humidity: float = 80.0
     max_growth_rate: float = 2.4
@@ -79,12 +94,12 @@ class GrowthModel:
         self._temp_points = [
             (self.min_temp - 6, -0.5),
             (self.min_temp, -0.3),
-            (self.min_growth, 0.05),
-            (20.0, 0.5),
+            (self.min_growth, 0.0),
+            ((self.min_growth + self.opt_temp) / 2, 0.55),
             (self.opt_temp, 1.0),
-            (self.max_growth, 0.0),
-            (self.max_temp, -1.0),
-            (self.max_temp + 7, -3.0),
+            (self.max_growth, 0.35),
+            (self.max_temp, 0.0),
+            (self.max_temp + 5, -1.5),
         ]
         self._humidity_points = [
             (0.0, 0.02),
@@ -102,11 +117,14 @@ class GrowthModel:
         clamped = max(0.0, min(100.0, humidity_pct))
         return _interpolate(clamped, self._humidity_points)
 
-    def growth_rate(self, temp_c: float, humidity_pct: float) -> float:
+    def growth_rate(self, temp_c: float, humidity_pct: float | None = None) -> float:
+        """humidity_pct=None means "no sensor" — neutral (no penalty), not a
+        guessed value. There is no DHT22 wired up, so this is always called
+        with no humidity_pct in practice (see _integrate_loop below)."""
         temp_eff = self.temperature_effect(temp_c)
-        humidity_eff = self.humidity_effect(humidity_pct)
         if temp_eff < 0:
             return temp_eff
+        humidity_eff = 1.0 if humidity_pct is None else self.humidity_effect(humidity_pct)
         return self.max_growth_rate * temp_eff * humidity_eff
 
     def update_population(self, current_pop, growth_rate, time_hours, max_pop=5000.0):
@@ -141,11 +159,11 @@ DEVICE_GLOB = os.getenv("DS18B20_GLOB", "/sys/bus/w1/devices/28*/w1_slave")
 DEVICE_ID = os.getenv("BIOREACTOR_DEVICE_ID", "bioreactor-pi-01")
 PORT = int(os.getenv("EDGE_PORT", "8080"))
 
-# DS18B20 measures temperature only — no DHT22 wired yet. ASSUMED_HUMIDITY_PCT
-# is used ONLY internally to drive the growth model's math (so the biomass
-# curve stays representative); it is reported to the dashboard as 0 (honest
-# "not measured"), not as a real reading.
-ASSUMED_HUMIDITY_PCT = float(os.getenv("ASSUMED_HUMIDITY", "80.0"))
+# DS18B20 measures temperature only — no DHT22 wired yet. The growth model
+# is called with humidity_pct=None (see GrowthModel.growth_rate), which
+# means "no reading" and applies no humidity penalty at all, rather than
+# guessing a specific percentage we don't actually have. Growth in real
+# mode is therefore driven by temperature alone, honestly.
 # Controller setpoint the heater/fan target (°C). Informational only for now —
 # no heater/fan hardware is wired up yet, see heater_power_pct/fan_speed_pct below.
 TARGET_TEMP_C = float(os.getenv("TARGET_TEMP", "30.0"))
@@ -210,6 +228,44 @@ def read_temp_smoothed():
 
 
 # =============================================================================
+# Camera (Pi Camera Module, CSI ribbon) — plain snapshot feed, no detection.
+# =============================================================================
+# The dashboard backend (ui/api/hardware.py::fetch_hardware_frame) does a
+# plain GET and treats the whole response body as one JPEG image — it polls
+# this endpoint itself (~5fps, see ui/api/camera.py::mjpeg_stream), so this
+# route only needs to hand back a single fresh frame per request, not run
+# its own streaming loop.
+CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
+
+picam2 = None
+try:
+    from picamera2 import Picamera2  # type: ignore[import-not-found]
+
+    picam2 = Picamera2()
+    picam2.configure(
+        picam2.create_video_configuration(main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT)})
+    )
+    picam2.start()
+    time.sleep(1.0)  # let auto-exposure/white-balance settle before first capture
+except Exception as exc:  # noqa: BLE001 — camera is optional; never take telemetry down with it
+    print(f"[WARN] Camera unavailable ({exc}). /api/camera/stream will 503.")
+    picam2 = None
+
+
+def capture_jpeg() -> bytes | None:
+    """One JPEG frame from the Pi Camera Module, or None if unavailable."""
+    if picam2 is None:
+        return None
+    stream = io.BytesIO()
+    try:
+        picam2.capture_file(stream, format="jpeg")
+    except Exception:  # noqa: BLE001 — a single bad frame shouldn't crash the loop
+        return None
+    return stream.getvalue()
+
+
+# =============================================================================
 # Growth integrator — background thread stepping the model on real temperature
 # =============================================================================
 
@@ -253,7 +309,9 @@ def _integrate_loop():
         sensor_ok = measured is not None
         temp_c = measured if sensor_ok else TARGET_TEMP_C
 
-        actual_rate = model.growth_rate(temp_c, ASSUMED_HUMIDITY_PCT)
+        # actual: real temperature, no humidity assumption (honest — no sensor for it)
+        actual_rate = model.growth_rate(temp_c)
+        # ideal: best-case reference curve (optimal temp AND optimal humidity)
         ideal_rate = model.growth_rate(model.opt_temp, model.opt_humidity)
 
         with _state_lock:
@@ -369,6 +427,15 @@ def data():
         return jsonify({"temperature": round(_state["temp_c"], 2), "unit": "Celsius"})
 
 
+@app.get("/api/camera/stream")
+def camera_stream():
+    """One fresh JPEG frame — no detection, just the raw chamber view."""
+    frame = capture_jpeg()
+    if frame is None:
+        return jsonify({"error": "camera unavailable"}), 503
+    return Response(frame, mimetype="image/jpeg")
+
+
 @app.get("/health")
 def health():
     with _state_lock:
@@ -376,6 +443,7 @@ def health():
             "status": "ok",
             "sensor_ok": _state["sensor_ok"],
             "device_file": DEVICE_FILE,
+            "camera_ok": picam2 is not None,
         })
 
 
@@ -385,6 +453,11 @@ def main():
               "Serving setpoint-only data. Check wiring / w1-gpio overlay.")
     else:
         print(f"[OK] DS18B20 at {DEVICE_FILE}")
+
+    if picam2 is None:
+        print("[WARN] No camera available. /api/camera/stream will return 503.")
+    else:
+        print(f"[OK] Camera streaming at {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
 
     threading.Thread(target=_integrate_loop, daemon=True).start()
 

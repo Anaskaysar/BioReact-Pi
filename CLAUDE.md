@@ -15,8 +15,11 @@ Full technical log for BioReact-Pi (CopernicusLAC / CU Hacking QNX Challenge): w
 - **Current status:** WORKING AND VALIDATED. The sensor reads real temperature via `/sys/bus/w1/devices/28-000000870030/w1_slave`, with CRC verification done by the kernel itself. Confirmed real reaction to heat (hand over the sensor): a gradual, consistent rise from 22.19°C → 28.44°C over a few seconds, no erratic jumps.
 - **Root cause of the earlier noise/jumps:** unstable physical connection (wires hand-held instead of on a fixed breadboard, and possibly a bad contact point on GPIO4 specifically). Fixed by using an extension cable into a breadboard and switching the DATA signal to GPIO17.
 - **Actuators (heater/fan):** NOT physically wired yet (no LEDs/fans connected). The edge server reports `heater_power_pct=0` and `fan_speed_pct=0` instead of simulating a value, so the dashboard never shows fake actuator data.
-- **Humidity:** no DHT22 connected yet. The dashboard reports `humidity_pct=0` (honest — not measured), but the growth model internally still assumes 80% so the biomass curve keeps reacting realistically to temperature until the real sensor is added.
-- **Dashboard:** fully built — live biomass chart, specific growth-rate (μ) chart, an animated top-down "petri dish" visualization, a Real-mode/Demo-mode toggle, and a dark theme throughout. Full build log in §5.
+- **Humidity:** no DHT22 connected yet. The dashboard reports `humidity_pct=0` (honest — not measured). The growth model no longer assumes a specific percentage either — `growth_rate(temp_c)` called with no humidity argument means "no sensor," applying a neutral (no-penalty) factor rather than guessing a number, so real mode is driven by temperature alone, honestly.
+- **Growth model range:** revised to the E. coli reference range — growth is positive strictly between **8°C and 50°C**, zero at those two boundaries, peaks at **37°C**. Verified against literature and covered by unit tests (`tests/test_growth_model.py`); the exact same formula is duplicated in three places on purpose (`src/models/growth_model.py`, the embedded copy in `edge/pi_edge_server.py`, and a JS port in `ui/dashboard/js/app.js` for demo mode) — see §5.9 if you ever need to change it, since all three need updating together.
+- **Camera:** a Pi Camera Module (CSI ribbon) is wired up and working — `edge/pi_edge_server.py` serves real JPEG frames via `picamera2`, and the dashboard's camera panel shows them live (see §5.9).
+- **Color/pH indicator + AI advisor:** the dashboard reads real color from the camera's ROI and interprets it as a simulated phenol-red pH indicator, then an on-demand "Ask AI" button sends that plus temperature/phase/biomass to Gemini for one concrete recommendation. See §5.10.
+- **Dashboard:** fully built — live biomass chart, specific growth-rate (μ) chart, an animated top-down "petri dish" visualization, a Real-mode/Demo-mode toggle, a dark theme throughout, a live camera feed, a simulated pH indicator, and an AI advisor. Full build log in §5.
 
 ---
 
@@ -148,18 +151,20 @@ if __name__ == "__main__":
 This is a **single self-contained file** (embeds its own copy of the growth model from `src/models/growth_model.py`, so it can be `scp`'d onto the Pi by itself — no need to clone the whole repo there). It:
 
 1. Reads the DS18B20 every second, median-smoothed over the last 5 reads to reject wiring-noise spikes.
-2. Feeds that real temperature into a `GrowthModel` (logistic growth, temperature/humidity-driven) to integrate `biomass_actual`, `biomass_ideal` (best-case reference curve), and a short-horizon `biomass_predicted`.
-3. Serves the result at `GET /api/telemetry` in exactly the JSON shape `ui/api/hardware.py` expects, plus a legacy `GET /data` endpoint (`{"temperature": ..., "unit": "Celsius"}`) and `GET /health`.
+2. Feeds that real temperature into a `GrowthModel` (logistic growth, temperature-driven — see §5.9 for why humidity is no longer assumed) to integrate `biomass_actual`, `biomass_ideal` (best-case reference curve), and a short-horizon `biomass_predicted`.
+3. Captures a real JPEG frame from the Pi Camera Module (`picamera2`) on request — optional, degrades to a clear 503 rather than crashing the rest of the service if no camera is attached (see §5.9).
+4. Serves telemetry at `GET /api/telemetry` in exactly the JSON shape `ui/api/hardware.py` expects, the camera at `GET /api/camera/stream` (one fresh JPEG per request), plus a legacy `GET /data` endpoint (`{"temperature": ..., "unit": "Celsius"}`) and `GET /health`.
 
-Every tunable is an environment variable — see the file's own docstring/header for the full list (`TARGET_TEMP`, `SIM_HOURS_PER_SECOND`, `ASSUMED_HUMIDITY`, `DS18B20_GLOB`, `EDGE_PORT`, etc).
+Every tunable is an environment variable — see the file's own docstring/header for the full list (`TARGET_TEMP`, `SIM_HOURS_PER_SECOND`, `DS18B20_GLOB`, `EDGE_PORT`, `CAMERA_WIDTH`, `CAMERA_HEIGHT`, etc).
 
 **Deploy:**
 
 ```bash
 scp edge/pi_edge_server.py user@<pi-ip>:~/
 ssh user@<pi-ip>
-sudo apt install python3-flask     # Debian/Ubuntu package manager — pip install fails
-                                    # with "externally-managed-environment" (PEP 668)
+sudo apt install python3-flask python3-picamera2   # picamera2 only needed if a camera is attached
+                                                     # (pip install fails with "externally-managed-
+                                                     # environment" / PEP 668 on Debian/Ubuntu)
 python3 pi_edge_server.py
 ```
 
@@ -167,6 +172,7 @@ Expected output:
 
 ```
 [OK] DS18B20 at /sys/bus/w1/devices/28-000000870030/w1_slave
+[OK] Camera streaming at 640x480
 [OK] Edge service on http://0.0.0.0:8080  (telemetry: /api/telemetry, target=30.0°C)
 ```
 
@@ -239,6 +245,27 @@ A toggle button (top-right of the banner) switches the biomass visualization bet
 
 The whole page (not just the camera/3D viewport panels, which were already dark) was flipped to a dark theme for a more "serious" look: `:root` CSS variables in `ui/dashboard/css/style.css` (`--bg-page`, `--bg-panel`, `--bg-card`, `--border`, `--text`, and the `--accent-*` "soft" tints, which went from light pastel backgrounds to translucent dark tints). Chart.js's per-axis tick/grid/legend colors in `app.js` were updated to match (they don't inherit CSS variables). Font switched from Inter/JetBrains Mono to **IBM Plex Sans / IBM Plex Mono** everywhere, including Chart.js's default font (`Chart.defaults.font.family`) — reads more like a lab instrument than a marketing page.
 
+### 5.9 Real camera, honest disconnection, and a critical event-loop bug
+
+A Pi Camera Module got physically wired up mid-hackathon. Wiring it into the existing mock/hardware camera pipeline surfaced three real, separately-diagnosed problems — worth documenting in order since each one masked the next.
+
+**Camera added.** `edge/pi_edge_server.py` gained a `GET /api/camera/stream` route using `picamera2` — captures one JPEG per request (the dashboard backend already polls this in a loop for the MJPEG panel, so a plain snapshot-per-request is the right contract, not a server-side streaming loop). Soft-imports `picamera2` so a missing camera/library degrades to a 503 on that one route without taking down telemetry.
+
+**Growth model range revised.** While verifying the model against E. coli literature, the temperature curve was retuned to the requested reference range: growth strictly positive between **8°C and 50°C**, zero at those exact boundaries, peak at **37°C** (previously 4–48°C with soft edges, not exactly zero at the boundary). The humidity assumption (`ASSUMED_HUMIDITY_PCT=80` baked into the edge server) was removed entirely — `GrowthModel.growth_rate(temp_c, humidity_pct=None)` now means "no sensor for this," applying a neutral multiplier (1.0, no penalty) instead of a guessed percentage. This is the same principle applied throughout the project (report 0/omit what you don't measure — see §1) extended to the *math*, not just the displayed values. The exact same points list is duplicated in `src/models/growth_model.py`, `edge/pi_edge_server.py`'s embedded copy, and the JS port in `app.js`'s demo mode — verified they agree by running the same temperature sweep through all three and comparing output.
+
+**Bug — silently faking data on disconnect.** `ui/api/hardware.py`'s original fallback, when the Pi was unreachable, loaded `ui/data/demo_telemetry.json` (a static example file) and served its fixed numbers as if they were a live reading — with only a small alert text as a hint. Combined with the Pi disconnecting frequently over the hackathon's flaky Ethernet link, this made the dashboard *look* like it was fed hardcoded/random data, because for stretches of time it genuinely was. **Fix:** every hardware-mode packet now carries an explicit `hardware_connected: boolean`. A true cold start (never connected) reports zeroed values and `status: "DISCONNECTED"` instead of loading the static JSON; a mid-session drop reuses the last real reading but marks it `hardware_connected: false` with a "stale Ns" alert. The frontend checks this flag and shows `--` in the metric cards and a distinct muted `banner--disconnected` state instead of ever displaying a number that could be mistaken for a live one. The camera got the same treatment: a hardware-mode fetch failure now renders a distinct "CAMERA OFFLINE" placeholder (`_render_offline_frame()` in `ui/api/camera.py`) instead of silently falling back to the mock mode's flask-cartoon render, which looked like a plausible working feed.
+
+**Bug — blocking I/O froze the entire server.** The real root cause behind "camera not working" / "everything looks stuck": `fetch_hardware_packet()` and `fetch_hardware_frame()` use `urllib.request.urlopen()`, a *blocking* call, invoked directly inside `async def` route handlers (`telemetry_ws`'s loop, `mjpeg_stream`'s loop) with no `await`. In `asyncio`, a blocking call freezes the **entire single-threaded event loop** for its duration — not just that one request, but every other connection the server is handling, including new WebSocket handshakes and plain HTTP routes like `/health`. Reproduced directly: with the Pi down, a fresh WebSocket client received *zero* packets in 15+ seconds. **Fix:** every blocking hardware I/O call is now wrapped in `asyncio.to_thread(...)` (`ui/api/main.py`'s `telemetry_ws` and `camera_snapshot`, `ui/api/camera.py`'s `mjpeg_stream`) so it runs on a worker thread instead of the event loop. Re-measured after the fix: first packet in 346ms even with the Pi unreachable.
+
+### 5.10 Simulated pH indicator + Gemini AI advisor
+
+Real bacteria don't change color enough to see on camera, so instead of inventing a fake signal, the dashboard simulates having dosed the medium with **phenol red** — the actual colorimetric pH indicator used in real cell-culture media (DMEM, RPMI, etc.): yellow at low pH, red/pink near neutral, magenta/purple at high pH. The *color extraction* is real image analysis of the camera's ROI; only the pH *interpretation* of that color is simulated (there's no real dye in the flask).
+
+- `ui/api/color_ph.py` crops the same ROI box shown on screen, downsamples and averages it, converts to HSV, and maps hue → pH via a piecewise-linear phenol-red reference curve. **Bug found while testing:** the reference hue points aren't monotonic in raw 0–360° terms because the real color path (yellow → red → magenta → purple) crosses the 0°/360° wraparound point. Fixed by "unwrapping" hues above 180° into negative degrees before interpolating, verified with a full sweep across the color wheel before wiring it in.
+- The reading is injected into the WebSocket packet's `ph_indicator` field by `ui/api/main.py::_with_ph_reading`, reusing whatever frame the camera's MJPEG loop already fetched (`camera.get_cached_real_frame()`) rather than doing a second Pi round-trip per telemetry tick.
+- `ui/api/advisor.py` sends the current temperature/phase/biomass/pH to **Gemini**, fine-tuned with the same E. coli reference numbers driving the rest of the app (37°C optimum, 8–50°C range, phenol-red pH convention), and asks for one short actionable recommendation. Triggered manually by an "Ask AI" button (`POST /api/advisor/feedback`) — deliberately not called automatically every telemetry tick, to avoid burning API quota. Soft-imports the client library and checks for `GEMINI_API_KEY`, degrading to a clear "not configured" message rather than crashing.
+- **Note:** `google-generativeai` is deprecated/unmaintained as of late 2025 — this uses **`google-genai`** (`from google import genai`, `genai.Client(...)`), the current SDK. Verified the request path is correct by calling the real Gemini endpoint with a deliberately invalid key and confirming it returns `API_KEY_INVALID` (i.e. the request reached Google correctly) rather than a client-side error.
+
 ---
 
 ## 6. Connecting to the Raspberry Pi (quick reference)
@@ -261,6 +288,13 @@ The whole page (not just the camera/3D viewport panels, which were already dark)
 - [x] Integrate the edge server with the dashboard — **RESOLVED**: `edge/pi_edge_server.py` exposes `/api/telemetry` in the shape `ui/api/hardware.py` consumes; dashboard runs with `BIOREACTOR_DATA_SOURCE=hardware` pointed at the Pi's IP.
 - [x] Smooth residual sensor noise — **RESOLVED**: `edge/pi_edge_server.py` uses the median of the last 5 readings.
 - [x] Live biomass + growth-rate charts, petri-dish visualization, Real/Demo toggle, dark theme — **RESOLVED**, see §5.
+- [x] Live camera feed — **RESOLVED**: Pi Camera Module + `picamera2`, served at `/api/camera/stream`, see §5.9.
+- [x] Growth model tuned to the E. coli reference range (8–50°C, optimal 37°C) with no hardcoded humidity assumption — **RESOLVED**, see §5.9.
+- [x] Dashboard silently showing fake/stale data when the Pi disconnects — **RESOLVED**: explicit `hardware_connected` flag, distinct disconnected UI state, see §5.9.
+- [x] Blocking network calls freezing the entire dashboard server when the Pi was unreachable — **RESOLVED**: moved to worker threads via `asyncio.to_thread`, see §5.9.
+- [x] Simulated pH indicator (real camera color, phenol-red interpretation) + Gemini AI advisor — **RESOLVED**, see §5.10.
 - [ ] Integrate physical actuators (heater/fan) — pending. Until then, `heater_power_pct`/`fan_speed_pct` report 0 (not simulated), so nothing on screen is faked.
-- [ ] Integrate a humidity sensor (DHT22) — pending. Until then, `humidity_pct` reports 0 on the dashboard; the growth model internally assumes 80% so the biomass curve stays representative.
+- [ ] Integrate a humidity sensor (DHT22) — pending. Until then, `humidity_pct` reports 0 on the dashboard, and the growth model applies no humidity term at all (neutral, not a guessed percentage — see §5.9).
+- [ ] Point the camera at the actual flask/chamber — it currently shows whatever the Pi happens to be aimed at, which affects the pH reading's meaningfulness.
+- [ ] Set `GEMINI_API_KEY` to actually get AI advisor responses (currently returns a "not configured" message without it).
 - [ ] Document the sensor ID (`28-000000870030`) if it's ever replaced — the ID changes per physical sensor. Note: the GPIO pin is configured in `/boot/firmware/config.txt`, not in the Python script — the script only uses the `28-...` ID, which doesn't change when the pin does.

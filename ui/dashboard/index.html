@@ -61,6 +61,11 @@
             <span id="color-hue" class="color-indicator__hue">hue 88°</span>
           </div>
         </div>
+        <div id="ph-indicator" class="ph-indicator" hidden>
+          <span class="ph-indicator__label">pH (phenol red, simulated)</span>
+          <span id="ph-value" class="ph-indicator__value">--</span>
+          <span id="ph-status" class="ph-indicator__status">--</span>
+        </div>
       </div>
     </section>
 
@@ -89,6 +94,15 @@
           <span class="metric-card__unit">%</span>
           <div class="metric-card__bar"><div id="bar-heater" class="metric-card__bar-fill"></div></div>
         </article>
+      </div>
+    </section>
+
+    <section class="panel panel--advisor">
+      <h2 class="panel__title">AI Advisor</h2>
+      <p class="panel__subtitle">Gemini reads the current state (temp, phase, simulated pH) and suggests one action</p>
+      <div class="advisor-body">
+        <p id="advisor-text" class="advisor-text">Click "Ask AI" for a recommendation based on the current reactor state.</p>
+        <button id="advisor-button" class="advisor-button" type="button">Ask AI</button>
       </div>
     </section>
   </main>
