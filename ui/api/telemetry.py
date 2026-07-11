@@ -1,4 +1,4 @@
-"""Telemetry packet generator — mock for Phase 1, swappable for live Pi data."""
+"""Telemetry sources — mock simulation (default) or live hardware polling."""
 
 from __future__ import annotations
 
@@ -7,22 +7,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-# The growth curve is deliberately compressed onto a "demo clock" measured in
-# seconds, not real hours. A real batch takes hours to move through lag ->
-# exponential -> stationary; a person watching a dashboard for 30-60 seconds
-# needs to actually see that arc happen, or every widget that derives from
-# biomass (the chart, the 3D blob's scale/cell count, the phase label) looks
-# frozen. t0/r below put the lag->exponential transition around 12s and
-# exponential->stationary around 31s, so the whole story plays out in under
-# a minute and then holds near the plateau (matching real batch behavior —
-# it doesn't restart on its own).
+from ui.config import settings
+
+# Demo growth curve is compressed onto seconds so the full lag -> exponential ->
+# stationary arc plays out in under a minute on the dashboard.
 GROWTH_K = 1.2
-GROWTH_R = 0.15   # per second
-GROWTH_T0 = 25.0  # seconds — logistic midpoint
+GROWTH_R = 0.15
+GROWTH_T0 = 25.0
 
 
 @dataclass
-class TelemetryState:
+class MockTelemetryState:
     """Mutable simulation state for mock telemetry."""
 
     start_time: float = field(default_factory=time.time)
@@ -34,10 +29,6 @@ class TelemetryState:
     color_baseline: tuple[int, int, int] = (142, 168, 90)
 
     def reset(self) -> None:
-        """Restart the growth cycle from t=0 — call on each new WS connection
-        so opening/refreshing the dashboard always shows the full lag ->
-        exponential -> stationary arc instead of whatever plateau the server
-        happened to have reached if it's been running a while."""
         self.start_time = time.time()
         self.tick = 0
         self.status = "STABLE"
@@ -47,7 +38,13 @@ class TelemetryState:
     def _elapsed_seconds(self) -> float:
         return time.time() - self.start_time
 
-    def _logistic(self, t: float, k: float = GROWTH_K, r: float = GROWTH_R, t0: float = GROWTH_T0) -> float:
+    def _logistic(
+        self,
+        t: float,
+        k: float = GROWTH_K,
+        r: float = GROWTH_R,
+        t0: float = GROWTH_T0,
+    ) -> float:
         return k / (1.0 + math.exp(-r * (t - t0)))
 
     def _status_from_temp(self, temp: float) -> str:
@@ -131,14 +128,24 @@ class TelemetryState:
         }
 
 
-_state = TelemetryState()
+_mock_state = MockTelemetryState()
 
 
 def get_telemetry_packet() -> dict[str, Any]:
-    """Return the next telemetry packet (mock or live, depending on config)."""
-    return _state.next_packet()
+    """Return the next telemetry packet from the configured data source."""
+    if settings.is_hardware:
+        from .hardware import fetch_hardware_packet
+
+        return fetch_hardware_packet()
+    return _mock_state.next_packet()
 
 
 def reset_telemetry() -> None:
-    """Restart the mock growth cycle — call when a client (re)connects."""
-    _state.reset()
+    """Restart the mock growth cycle when a client (re)connects."""
+    if not settings.is_hardware:
+        _mock_state.reset()
+
+
+def get_mock_state() -> MockTelemetryState:
+    """Expose mock state for synthetic camera rendering."""
+    return _mock_state

@@ -206,7 +206,26 @@ cp .env.example .env   # add GEMINI, ELEVENLABS, MONGODB, DO credentials
 See [requirements.txt](requirements.txt). Packages will include GPIO, DHT sensor, and plotting libraries once implementation begins.
 </p>
 
-## Usage
+### Dashboard (UI)
+
+```bash
+source venv/bin/activate
+python ui/run_dashboard.py
+```
+
+Open **http://localhost:8000**. By default the UI runs in **mock** mode (simulated growth + synthetic camera).
+
+**Switch to live hardware** — set env vars (see `ui/.env.example`) before starting:
+
+```bash
+export BIOREACTOR_DATA_SOURCE=hardware
+export BIOREACTOR_HARDWARE_URL=http://<pi-ip>:8080
+python ui/run_dashboard.py
+```
+
+The UI polls `BIOREACTOR_HARDWARE_URL` + `BIOREACTOR_HARDWARE_TELEMETRY_PATH` and proxies the camera stream. Payload shape is documented in `ui/data/demo_telemetry.json`.
+
+### Edge controller (Pi / QNX)
 
 ```bash
 source venv/bin/activate
@@ -242,13 +261,15 @@ CU_Hacking/
 │   ├── sensors/             # DHT22 / fallback input
 │   ├── models/              # Logistic growth model
 │   ├── control/             # PID controller
-│   └── ui/                  # Local LCD / LED display
-├── cloud/
-│   ├── api/                 # REST API (DigitalOcean)
-│   ├── dashboard/           # Web dashboard (DigitalOcean)
-│   ├── ai/                  # Google Gemini integration
-│   ├── voice/               # ElevenLabs TTS alerts
-│   └── db/                  # MongoDB Atlas models & queries
+│   └── display/             # Local LCD / LED display
+├── ui/
+│   ├── run_dashboard.py     # Start the web dashboard
+│   ├── config.py            # Mock vs hardware data source settings
+│   ├── .env.example         # Hardware connection strings
+│   ├── data/
+│   │   └── demo_telemetry.json  # Sample edge payload shape
+│   ├── api/                 # FastAPI — telemetry, camera, static files
+│   └── dashboard/           # HTML / CSS / JS frontend
 └── digital_twin/
     └── simulator.py         # Offline growth simulation
 ```
