@@ -1,80 +1,51 @@
 # BioReact-Pi
 
 <p align="justify">
-Edge-AI bioreactor controller on Raspberry Pi 5 with QNX — live growth simulation synchronized with real-world sensor data to optimize bacterial batch yield.
+Edge-AI bioreactor controller on Raspberry Pi 5 with QNX. BioReact-Pi reads live chamber sensors, runs a logistic growth model to predict biomass yield, and uses PID control to adjust heating and cooling — keeping bacterial cultures in their optimal growth phase.
 </p>
 
-## Hackathon
+## Overview
 
 <p align="justify">
-BioReact-Pi is built for <strong>The QNX Hackathon Challenge</strong> at CU Hacking — create an embedded system with QNX that uses AI. Loaner Raspberry Pi 5 boards (pre-loaded with QNX and cameras) are provided on-site.
+Industrial bioreactors grow bacteria for medicine, insulin, clean meat, and biofuels. Small deviations in temperature or feeding can ruin an entire batch. BioReact-Pi is an embedded control system that closes the loop between sensing, prediction, and actuation on low-cost hardware, with a live web dashboard for monitoring and review.
 </p>
 
-![The QNX Hackathon Challenge — embedded system with QNX and AI](docs/qnx-hackathon-challenge.png)
+**Core capabilities:**
 
-### Hard requirements
+- Real-time temperature and humidity sensing (DHT22 primary path)
+- Logistic growth model for biomass prediction
+- PID feedback loops for heater and cooling fan actuation
+- Live web UI — biomass curves, 3D growth visualization, chamber camera, core metrics
+- Mock or hardware data sources (switch via environment variables)
+- Digital twin for offline simulation and what-if testing (planned)
+- QNX open-source AI modules for on-device inference ([oss.qnx.com](https://oss.qnx.com))
 
-| Requirement | How BioReact-Pi meets it |
-|-------------|--------------------------|
-| Product uses **QNX OS** | Runs on loaner Raspberry Pi 5 pre-loaded with QNX |
-| Includes an **open-source AI module** from [oss.qnx.com](https://oss.qnx.com) | On-device AI inference for growth prediction and anomaly detection via QNX AI modules |
-
-### Judging alignment
-
-| Criterion | BioReact-Pi answer |
-|-----------|-------------------|
-| "Cannot-fail" embedded application? | Yes — prevents $100k batch failure via real-time temperature control |
-| Requires real-time or reliability? | Yes — PID loops with sub-second actuator response on QNX |
-| AI used in an interesting way? | Yes — logistic growth model + QNX AI modules predict biomass and flag batch risk on-edge |
-| Running on embedded hardware (not cloud)? | Yes — growth model, PID, and AI inference run on the Pi; cloud is logging/dashboard only |
-
-![CU Hacking prize categories](docs/prizes.png)
-
-**Target categories:** Best Hardware Hack, Best AI Hack, QNX Challenge (1st–3rd place)
+## Web Dashboard
 
 <p align="justify">
-Opening ceremony slides: [docs/cuHacking Opening Ceremony (1).pdf](docs/cuHacking%20Opening%20Ceremony%20(1).pdf)
+The dashboard runs locally via FastAPI and streams telemetry over WebSocket. In development it uses simulated growth data; when the Pi edge service is connected, the same UI reads live hardware with no frontend changes.
 </p>
 
-## Problem
+![BioReact-Pi web dashboard](docs/ui-dashboard.png)
 
-<p align="justify">
-Industrial bioreactors grow bacteria for medicine, insulin, clean meat, and biofuels. If temperature or feeding schedule drifts even slightly, the entire batch can fail. A 1°C temperature shift can ruin a $100,000 production run.
-</p>
+```bash
+source venv/bin/activate
+python ui/run_dashboard.py
+```
 
-## Solution
+Open **http://localhost:8000**.
 
-<p align="justify">
-BioReact-Pi acts as the brain of a bioreactor. It reads temperature from a sensor, runs a live logistic growth model in Python to predict future biomass yield, and uses PID control to dynamically adjust a heater and nutrient feeder — keeping bacteria in the optimal exponential growth phase.
-</p>
+**Mock mode (default)** — simulated growth curve and synthetic camera feed.
 
-**Key features:**
+**Hardware mode** — point at the Pi/QNX edge service:
 
-- Real-time temperature sensing (DHT22 primary path)
-- Live logistic growth simulation and yield prediction
-- PID feedback loops for heater and nutrient pump actuation
-- Live UI comparing actual vs. ideal growth curves
-- Digital twin for offline bacteria growth simulation and what-if testing
-- Google Gemini API for intelligent batch analysis and natural-language alerts (cloud supplement)
-- ElevenLabs voice alerts for hands-free operator feedback during demos
-- MongoDB Atlas for cloud logging of sensor readings and growth history
-- DigitalOcean-hosted web dashboard and API backend
-- QNX open-source AI modules for on-device growth inference ([oss.qnx.com](https://oss.qnx.com))
+```bash
+export BIOREACTOR_DATA_SOURCE=hardware
+export BIOREACTOR_HARDWARE_URL=http://<pi-ip>:8080
+python ui/run_dashboard.py
+```
 
-## Demo
-
-<p align="justify">
-The BioReact-Pi prototype combines edge control, physical actuators, and a live web dashboard. A DHT22 sensor reads chamber conditions; a Raspberry Pi 5 running QNX executes growth simulation, PID control, and on-device AI inference; a heating pad and 5V fan regulate temperature; and a web interface plots predicted vs. ideal vs. actual biomass growth in real time.
-</p>
-
-![BioReact-Pi demo — system architecture, hardware prototype, and web dashboard](docs/demo.png)
-
-**What the demo shows:**
-
-- **System architecture** — DHT22 → Raspberry Pi 5 (QNX) → heater & cooling fan → web dashboard
-- **Physical prototype** — acrylic bioreactor chamber, LCD readout, and HEATING / STABLE / COOLING status LEDs
-- **Web dashboard** — live biomass curve, actuator output (heater power, fan speed), and system alerts
-- **Operating states** — chamber lighting reflects heating (red), stable (green), and cooling (blue) modes
+Connection settings and payload format: `ui/.env.example`, `ui/data/demo_telemetry.json`.
 
 ## Architecture
 
@@ -90,14 +61,10 @@ flowchart TB
   lcd[LCD_StatusPanel]
   twin[DigitalTwinSimulator]
 
-  subgraph cloud [Cloud — DigitalOcean]
+  subgraph ui [UI — FastAPI Dashboard]
     api[API_Backend]
     web[WebDashboard]
-    gemini[GoogleGeminiAPI]
-    eleven[ElevenLabs_TTS]
   end
-
-  atlas[(MongoDBAtlas)]
 
   sensor --> pi
   pi --> qnxAI
@@ -107,13 +74,8 @@ flowchart TB
   pid --> fan
   pi --> lcd
   pi -->|telemetry| api
-  api --> atlas
-  web --> atlas
-  api --> gemini
-  gemini -->|alerts| eleven
-  eleven -->|voice| web
+  api --> web
   pi <-->|sync| twin
-  web --> pi
 ```
 
 **Data flow:**
@@ -123,22 +85,18 @@ flowchart TB
 3. PID controller compares actual vs. target temperature and outputs heater/fan signals.
 4. Heating pad and cooling fan regulate chamber temperature.
 5. LCD panel and status LEDs show temp, biomass, phase, and HEATING / STABLE / COOLING state.
-6. Web dashboard (hosted on DigitalOcean) renders predicted vs. ideal vs. actual growth curves and actuator output.
-7. Telemetry is logged to MongoDB Atlas for batch history and replay.
-8. Google Gemini API analyzes anomalies and generates plain-language alert summaries.
-9. ElevenLabs converts alerts into voice feedback for hands-free demo narration.
-10. Digital twin mirrors the physical system for simulation and calibration.
+6. Web dashboard renders predicted vs. ideal vs. actual growth curves, actuator output, and chamber camera feed.
+7. Digital twin mirrors the physical system for simulation and calibration.
 
 ## Tech Stack
 
-| Tool | Role in BioReact-Pi |
-|------|---------------------|
-| **QNX OS** | Real-time embedded OS on Raspberry Pi 5 — PID, sensors, actuators |
-| **QNX AI modules** ([oss.qnx.com](https://oss.qnx.com)) | On-device growth inference and anomaly detection (judging requirement) |
-| **Google Gemini API** | Cloud supplement — interprets deviations and generates alert summaries |
-| **ElevenLabs** | Text-to-speech voice alerts for live demo narration |
-| **MongoDB Atlas** | Cloud store for sensor telemetry, biomass history, and batch records |
-| **DigitalOcean** | Hosts the web dashboard, REST API, and cloud services |
+| Component | Role |
+|-----------|------|
+| **QNX OS** | Real-time embedded OS on Raspberry Pi 5 — sensors, PID, actuators |
+| **QNX AI modules** ([oss.qnx.com](https://oss.qnx.com)) | On-device growth inference and anomaly detection |
+| **Python / FastAPI** | Edge logic and dashboard API |
+| **Chart.js + Three.js** | Biomass chart and 3D growth visualization |
+| **WebSocket + MJPEG** | Live telemetry and camera streaming |
 
 ## Hardware
 
@@ -146,24 +104,18 @@ flowchart TB
 
 | Component | Purpose | Notes |
 |-----------|---------|-------|
-| Raspberry Pi 5 | Edge controller | Loaner board — QNX pre-loaded, camera included |
+| Raspberry Pi 5 | Edge controller | QNX pre-loaded, camera included |
 | DHT22 sensor | Temperature & humidity | Inside bioreactor chamber |
 | Heating pad | Temperature control | Under flask base |
 | 5V cooling fan | Temperature control | Active cooling when above target |
 | LCD display | Local readout | Temp, target, biomass, growth phase |
 | Status LEDs | HEATING / STABLE / COOLING | Red, green, blue indicators |
-| Acrylic chamber | Demo enclosure | Erlenmeyer flask with culture medium |
+| Acrylic chamber | Enclosure | Erlenmeyer flask with culture medium |
 
-### Primary demo path
-
-<p align="justify">
-Full prototype as shown in [docs/demo.png](docs/demo.png): DHT22 inside the chamber, heating pad and cooling fan for closed-loop temperature control, front-panel LCD and status LEDs, and a web dashboard for live growth curves and actuator output.
-</p>
-
-### Fallback demo path
+### Fallback input
 
 <p align="justify">
-If no DHT sensor is available, use a potentiometer on an analog input (via ADC) or a GPIO-readable dial to simulate temperature for demo purposes.
+If no DHT sensor is available, a potentiometer on an analog input (via ADC) or a GPIO-readable dial can simulate temperature for bench testing.
 </p>
 
 ### GPIO pin assignments
@@ -175,91 +127,59 @@ If no DHT sensor is available, use a potentiometer on an analog input (via ADC) 
 | GPIO 27 | Cooling fan | Output |
 | GPIO 22 | Potentiometer (fallback) | Input |
 
-> Pin numbers are placeholders — adjust to match your wiring. See [docs/WIRING.md](docs/WIRING.md) when available.
+> Pin numbers are placeholders — adjust to match your wiring.
 
 ## Software Setup
 
 ### Prerequisites
 
-- QNX on Raspberry Pi 5 (loaner hardware provided at hackathon)
+- QNX on Raspberry Pi 5
 - QNX open-source AI module from [oss.qnx.com](https://oss.qnx.com)
-- Python 3.9+ / C++ (per QNX toolchain)
-- MongoDB Atlas cluster (free tier)
-- DigitalOcean Droplet or App Platform for dashboard + API
-- Google Gemini API key
-- ElevenLabs API key
+- Python 3.9+
 
 ### Installation
 
 ```bash
-git clone <repo-url>
-cd CU_Hacking
+git clone https://github.com/Anaskaysar/BioReact-Pi.git
+cd BioReact-Pi
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # add GEMINI, ELEVENLABS, MONGODB, DO credentials
 ```
 
-### Dependencies
-
-<p align="justify">
-See [requirements.txt](requirements.txt). Packages will include GPIO, DHT sensor, and plotting libraries once implementation begins.
-</p>
-
-## Usage
+### Edge controller (Pi / QNX)
 
 ```bash
 source venv/bin/activate
 python src/main.py
 ```
 
-**Expected demo behavior:**
-
-- Web dashboard shows predicted, ideal, and actual biomass growth curves
-- LCD displays temp (e.g. 28.4 °C), target (30.0 °C), biomass (0.72 g/L), and growth phase
-- HEATING / STABLE / COOLING LEDs and chamber lighting reflect live control state
-- Heater power and fan speed bars update as PID responds to temperature drift
-- Gemini-generated alerts appear in the dashboard when growth deviates from ideal
-- ElevenLabs plays voice alerts for critical state changes (heating, stable, cooling)
-- All telemetry persists to MongoDB Atlas for batch replay and judge review
-- Digital twin can run standalone for simulation without hardware
-
 ## Project Structure
 
 ```
-CU_Hacking/
+BioReact-Pi/
 ├── README.md
 ├── requirements.txt
-├── .env.example
 ├── docs/
-│   ├── demo.png                      # Demo architecture, hardware, and dashboard
-│   ├── qnx-hackathon-challenge.png   # QNX challenge requirements
-│   ├── prizes.png                    # CU Hacking prize categories
-│   ├── cuHacking Opening Ceremony (1).pdf
-│   └── PITCH.md
+│   ├── PITCH.md                 # Hackathon pitch & demo narrative
+│   └── ui-dashboard.png         # Current web UI screenshot
 ├── src/
-│   ├── main.py              # Pi entry point
-│   ├── sensors/             # DHT22 / fallback input
-│   ├── models/              # Logistic growth model
-│   ├── control/             # PID controller
-│   └── ui/                  # Local LCD / LED display
-├── cloud/
-│   ├── api/                 # REST API (DigitalOcean)
-│   ├── dashboard/           # Web dashboard (DigitalOcean)
-│   ├── ai/                  # Google Gemini integration
-│   ├── voice/               # ElevenLabs TTS alerts
-│   └── db/                  # MongoDB Atlas models & queries
+│   ├── main.py                  # Pi entry point
+│   ├── sensors/                 # DHT22 / fallback input
+│   ├── models/                  # Logistic growth model
+│   ├── control/                 # PID controller
+│   └── display/                 # Local LCD / LED display
+├── ui/
+│   ├── run_dashboard.py         # Start the web dashboard
+│   ├── config.py                # Mock vs hardware data source
+│   ├── .env.example             # Hardware connection strings
+│   ├── data/
+│   │   └── demo_telemetry.json  # Sample edge payload shape
+│   ├── api/                     # FastAPI — telemetry, camera, static files
+│   └── dashboard/               # HTML / CSS / JS frontend
 └── digital_twin/
-    └── simulator.py         # Offline growth simulation
+    └── simulator.py             # Offline growth simulation
 ```
-
-## Demo / Pitch
-
-<p align="justify">
-Industrial biotechnology relies on living organisms to produce everything from insulin to biofuels, but a 1-degree temperature shift can ruin a $100,000 batch. BioReact-Pi embeds predictive biological growth models and active PID control loops on a low-cost Raspberry Pi — a self-optimizing edge system that prevents batch failure in real time.
-</p>
-
-Full pitch script: [docs/PITCH.md](docs/PITCH.md)
 
 ## Team
 
@@ -269,6 +189,12 @@ Full pitch script: [docs/PITCH.md](docs/PITCH.md)
 | Arkesh | Growth model & control |
 | Anas | UI & digital twin |
 | Anna | Bio Med |
+| | |
+| | |
+
+<p align="justify">
+Hackathon pitch, judging alignment, demo script, and sponsor integrations: <a href="docs/PITCH.md">docs/PITCH.md</a>
+</p>
 
 ## License
 
