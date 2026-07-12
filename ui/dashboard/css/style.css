@@ -227,11 +227,39 @@ header.banner {
   flex: 1;
   min-height: 0;
   display: grid;
-  /* Camera + 3D share equal width; chart + growth-rate + metrics + advisor stack in a wider sidebar. */
-  grid-template-columns: 2fr 2fr minmax(300px, 2.5fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  /* Two regions: left (camera + growth render + metrics) and right (graphs
+     + advisor). Each region is its own grid so their row rhythms are
+     independent — the camera can be tall on the left without stretching the
+     graphs on the right. */
+  grid-template-columns: 1.15fr 1.35fr;
   gap: var(--gap);
   padding: var(--gap);
+}
+
+.region {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: var(--gap);
+}
+
+/* Left: camera spans the top (tall); growth render + metrics split below. */
+.region--left {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1.55fr 1fr;
+  grid-template-areas:
+    "camera camera"
+    "viz    metrics";
+}
+
+/* Right: 2x2 graphs, advisor spanning the bottom. */
+.region--right {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr 0.62fr;
+  grid-template-areas:
+    "biomass    growthrate"
+    "temp       ph"
+    "advisor    advisor";
 }
 
 .panel {
@@ -261,34 +289,36 @@ header.banner {
   margin-bottom: 14px;
 }
 
-.panel--camera {
-  grid-column: 1;
-  grid-row: 1 / span 4;
+.panel--camera { grid-area: camera; }
+.panel--viz3d { grid-area: viz; }
+.panel--metrics { grid-area: metrics; }
+.panel--chart { grid-area: biomass; }
+.panel--growthrate { grid-area: growthrate; }
+.panel--temp { grid-area: temp; }
+.panel--ph { grid-area: ph; }
+.panel--advisor { grid-area: advisor; }
+
+/* Full-bleed media panels (camera + growth render): the media fills the
+   whole panel and the title floats on top of it. */
+.panel--media {
+  padding: 0;
+  position: relative;
 }
 
-.panel--viz3d {
-  grid-column: 2;
-  grid-row: 1 / span 4;
+.panel__title--overlay {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  z-index: 3;
+  margin: 0;
+  pointer-events: none;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
 }
 
-.panel--chart {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.panel--growthrate {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.panel--metrics {
-  grid-column: 3;
-  grid-row: 3;
-}
-
-.panel--advisor {
-  grid-column: 3;
-  grid-row: 4;
+.panel--media .camera-wrap,
+.panel--media #viz3d-container {
+  flex: 1;
+  border-radius: var(--radius);
 }
 
 .chart-wrap {
@@ -523,16 +553,19 @@ header.banner {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 16px;
 }
 
 .advisor-text {
+  flex: 1;
   font-size: 0.82rem;
   line-height: 1.45;
   color: var(--text);
   overflow-y: auto;
+  max-height: 100%;
 }
 
 .advisor-text--error {
@@ -545,7 +578,7 @@ header.banner {
 }
 
 .advisor-button {
-  align-self: flex-start;
+  align-self: center;
   font-family: var(--font-sans);
   font-size: 0.78rem;
   font-weight: 700;
@@ -601,17 +634,26 @@ header.banner {
   .dashboard {
     flex: none;
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto auto auto;
     overflow: visible;
   }
 
-  /* Highlights first on mobile too, chart/metrics follow. */
-  .panel--camera { grid-column: 1; grid-row: 1; min-height: 280px; }
-  .panel--viz3d { grid-column: 1; grid-row: 2; min-height: 260px; }
-  .panel--chart { grid-column: 1; grid-row: 3; min-height: 260px; }
-  .panel--growthrate { grid-column: 1; grid-row: 4; min-height: 220px; }
-  .panel--metrics { grid-column: 1; grid-row: 5; }
-  .panel--advisor { grid-column: 1; grid-row: 6; min-height: 160px; }
+  /* Both regions collapse to a single stacked column on mobile. */
+  .region {
+    grid-template-columns: 1fr;
+    grid-template-areas: none;
+  }
+
+  .panel--camera { min-height: 300px; }
+  .panel--viz3d { min-height: 280px; }
+  .panel--metrics { min-height: 180px; }
+  .panel--chart,
+  .panel--growthrate,
+  .panel--temp,
+  .panel--ph { min-height: 230px; }
+  .panel--advisor { min-height: 140px; }
+
+  .advisor-body { flex-direction: column; align-items: stretch; }
+  .advisor-button { align-self: flex-start; }
 
   .banner__alert {
     position: static;

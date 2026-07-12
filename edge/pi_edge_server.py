@@ -176,7 +176,7 @@ TARGET_TEMP_C = float(os.getenv("TARGET_TEMP", "30.0"))
 # faster client-side clock for the accelerated hair-dryer showcase; this is
 # the honest, realistic pace. Bump it via the env var if you want real mode
 # to move faster during a short demo.
-SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.005"))
+SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.0005"))
 TICK_S = float(os.getenv("TICK_S", "1.0"))
 
 INITIAL_BIOMASS_G_L = 0.05

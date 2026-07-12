@@ -236,6 +236,133 @@ function pushGrowthRatePoint(packet) {
   growthRateChart.update("none");
 }
 
+// ── Chart.js temperature + pH time-series ──
+// Small plugin: draw dashed horizontal reference lines (e.g. the 37°C
+// optimum, the pH 6.8 good/bad threshold) without pulling in the annotation
+// plugin. `lines` is [{ y, color }].
+function hLinePlugin(lines) {
+  return {
+    id: "hlines",
+    afterDatasetsDraw(c) {
+      const { ctx, chartArea, scales } = c;
+      lines.forEach(({ y, color }) => {
+        const yPix = scales.y.getPixelForValue(y);
+        if (yPix < chartArea.top || yPix > chartArea.bottom) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(chartArea.left, yPix);
+        ctx.lineTo(chartArea.right, yPix);
+        ctx.stroke();
+        ctx.restore();
+      });
+    },
+  };
+}
+
+// Shared axis/plugin styling so every time-series chart reads as one system.
+function timeSeriesOptions(yTitle, yOpts = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    interaction: { mode: "index", intersect: false },
+    scales: {
+      x: {
+        type: "linear",
+        title: { display: true, text: "Time (min)", color: "#8b8e97" },
+        ticks: { color: "#8b8e97" },
+        grid: { color: "rgba(255, 255, 255, 0.06)" },
+      },
+      y: {
+        title: { display: true, text: yTitle, color: "#8b8e97" },
+        ticks: { color: "#8b8e97" },
+        grid: { color: "rgba(255, 255, 255, 0.06)" },
+        ...yOpts,
+      },
+    },
+    plugins: {
+      legend: {
+        labels: { color: "#e8e9ec", usePointStyle: true, pointStyle: "line" },
+      },
+    },
+  };
+}
+
+const tempCanvas = $("temp-chart");
+const tempChart = new Chart(tempCanvas, {
+  type: "line",
+  data: {
+    datasets: [
+      {
+        label: "Temperature (°C)",
+        data: [],
+        borderColor: "#f87171",
+        backgroundColor: "rgba(248, 113, 113, 0.14)",
+        borderWidth: 2.5,
+        pointRadius: 0,
+        tension: 0.3,
+        fill: true,
+      },
+    ],
+  },
+  // Dashed refs at the 30°C demo-bloom threshold (amber) and 37°C optimum (green).
+  options: timeSeriesOptions("°C", { suggestedMin: 15, suggestedMax: 42 }),
+  plugins: [hLinePlugin([
+    { y: 30, color: "rgba(251, 191, 36, 0.5)" },
+    { y: 37, color: "rgba(74, 222, 128, 0.5)" },
+  ])],
+});
+new ResizeObserver(() => tempChart.resize()).observe(tempCanvas.parentElement);
+
+function pushTempPoint(packet) {
+  if (packet.hardware_connected === false || typeof packet.temp !== "number") return;
+  const t = chartStartTime
+    ? (packet.timestamp - chartStartTime) / currentTimeUnit().divisor
+    : 0;
+  const data = tempChart.data.datasets[0].data;
+  data.push({ x: t, y: packet.temp });
+  if (data.length > MAX_POINTS) data.shift();
+  tempChart.update("none");
+}
+
+const phCanvas = $("ph-chart");
+const phChart = new Chart(phCanvas, {
+  type: "line",
+  data: {
+    datasets: [
+      {
+        label: "pH (phenol red, simulated)",
+        data: [],
+        borderColor: "#22d3ee",
+        backgroundColor: "rgba(34, 211, 238, 0.12)",
+        borderWidth: 2.5,
+        pointRadius: 0,
+        tension: 0.3,
+        fill: true,
+      },
+    ],
+  },
+  // Dashed ref at the pH 6.8 good/bad boundary (red).
+  options: timeSeriesOptions("pH", { suggestedMin: 6.0, suggestedMax: 7.6 }),
+  plugins: [hLinePlugin([{ y: 6.8, color: "rgba(248, 113, 113, 0.55)" }])],
+});
+new ResizeObserver(() => phChart.resize()).observe(phCanvas.parentElement);
+
+function pushPhPoint(packet) {
+  // pH only exists in hardware mode once a camera frame has been analyzed.
+  if (!packet.ph_indicator || typeof packet.ph_indicator.ph !== "number") return;
+  const t = chartStartTime
+    ? (packet.timestamp - chartStartTime) / currentTimeUnit().divisor
+    : 0;
+  const data = phChart.data.datasets[0].data;
+  data.push({ x: t, y: packet.ph_indicator.ph });
+  if (data.length > MAX_POINTS) data.shift();
+  phChart.update("none");
+}
+
 // ── Three.js growth visualization — Petri dish colony timelapse ──
 // Modeled on a real bacterial-colony timelapse: colonies seed at fixed
 // points scattered over the agar, then each one *expands* as a growing
@@ -408,9 +535,9 @@ function initViz3D() {
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
 
-  // Margin so the dish (plus its rim) never touches the panel edge; extra
-  // margin because the slight tilt foreshortens the far edge of the circle.
-  const FIT_MARGIN = 1.28;
+  // Small margin so the dish + rim just barely clear the panel edge — the
+  // render should nearly fill its panel (the growth viz is a centerpiece).
+  const FIT_MARGIN = 1.08;
 
   function resize() {
     const w = container.clientWidth;
@@ -593,14 +720,19 @@ function phaseFromRate(rate) {
   return "death";
 }
 
-// Tunable: how many simulated hours pass per real second in demo mode. The
-// edge server's real-mode pace is far slower (0.005, see pi_edge_server.py
-// SIM_HOURS_PER_SECOND) — demo is deliberately time-compressed for a punchy
-// live showcase, not because the biology changed (same formula). Picked so
-// that room temperature (~1.3/h) fills the plate in ~35-40s while a
-// hair-dryer blast toward the 37°C optimum (~2.4/h) visibly races it in
-// ~18-20s — that gap is the whole point of the demo.
-const DEMO_HOURS_PER_SECOND = 0.15;
+// Demo mode is a deliberately time-compressed showcase (the edge server's
+// real-mode pace is ~1000x slower, see pi_edge_server.py). It's built to
+// stay near-frozen at room temperature and visibly bloom once the sensor is
+// warmed with a hair dryer:
+//   DEMO_HOURS_PER_SECOND  — base compression once the culture IS growing.
+//   DEMO_BOOST_LO/HI       — a temperature gate multiplying the demo growth
+//                            rate: ~0 below LO (nothing happens at room temp),
+//                            ramping to full by HI. Centered so growth "takes
+//                            off" as temperature climbs past ~30°C toward 37°C.
+// This gate is demo-only theatre; real mode uses the pure formula unchanged.
+const DEMO_HOURS_PER_SECOND = 0.28;
+const DEMO_BOOST_LO = 28.0;
+const DEMO_BOOST_HI = 38.0;
 
 let vizMode = "real"; // "real" | "demo"
 let demoBiomass = 0.05;
@@ -622,9 +754,12 @@ function computeEffectivePacket(packet) {
   const dtHours = Math.max(0, packet.timestamp - demoLastRealTimestamp) * DEMO_HOURS_PER_SECOND;
   demoLastRealTimestamp = packet.timestamp;
 
-  // actual: real temperature reading, no humidity assumption — we only
-  // have a temperature sensor, same honesty rule as the Pi's real mode.
-  const rate = growthRate(packet.temp);
+  // actual: real temperature reading, no humidity assumption — we only have
+  // a temperature sensor. The demo-only temperature gate keeps the plate
+  // near-frozen at room temp and makes it bloom as the sensor is heated
+  // toward 37°C (see DEMO_BOOST_LO/HI).
+  const tempBoost = smoothstep(DEMO_BOOST_LO, DEMO_BOOST_HI, packet.temp);
+  const rate = growthRate(packet.temp) * tempBoost;
   // ideal: best-case reference curve (optimal temp AND optimal humidity)
   const idealRate = growthRate(OPT_TEMP, OPT_HUMIDITY);
   demoBiomass = updatePopulation(demoBiomass, rate, dtHours);
@@ -650,12 +785,11 @@ const demoBadge = $("demo-badge");
 function resetGrowthDisplays() {
   chartStartTime = null;
   const unitLabel = currentTimeUnit().label;
-  for (const ds of chart.data.datasets) ds.data = [];
-  chart.options.scales.x.title.text = unitLabel;
-  chart.update("none");
-  growthRateChart.data.datasets[0].data = [];
-  growthRateChart.options.scales.x.title.text = unitLabel;
-  growthRateChart.update("none");
+  for (const c of [chart, growthRateChart, tempChart, phChart]) {
+    for (const ds of c.data.datasets) ds.data = [];
+    c.options.scales.x.title.text = unitLabel;
+    c.update("none");
+  }
   viz3d.resetViz();
 }
 
@@ -729,11 +863,13 @@ function updateDashboard(packet) {
   }
 
   // Charts + 3D — biomass/growth reflect whichever mode is active (real
-  // instrument pace vs. accelerated demo formula); temperature, humidity,
-  // fan/heater and the banner above always show the true sensor readings.
+  // instrument pace vs. accelerated demo formula); temperature and pH charts
+  // always plot the true sensor readings, in the current mode's time unit.
   const vizPacket = computeEffectivePacket(packet);
   pushChartPoint(vizPacket);
   pushGrowthRatePoint(vizPacket);
+  pushTempPoint(packet);
+  pushPhPoint(packet);
   viz3d.updateViz(vizPacket);
 }
 

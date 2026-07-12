@@ -19,7 +19,7 @@ Full technical log for BioReact-Pi (CopernicusLAC / CU Hacking QNX Challenge): w
 - **Growth model range:** revised to the E. coli reference range — growth is positive strictly between **8°C and 50°C**, zero at those two boundaries, peaks at **37°C**. Verified against literature and covered by unit tests (`tests/test_growth_model.py`); the exact same formula is duplicated in three places on purpose (`src/models/growth_model.py`, the embedded copy in `edge/pi_edge_server.py`, and a JS port in `ui/dashboard/js/app.js` for demo mode) — see §5.9 if you ever need to change it, since all three need updating together.
 - **Camera:** a Pi Camera Module (CSI ribbon) is wired up and working — `edge/pi_edge_server.py` serves real JPEG frames via `picamera2`, and the dashboard's camera panel shows them live (see §5.9).
 - **Color/pH indicator + AI advisor:** the dashboard reads real color from the camera's ROI and interprets it as a simulated phenol-red pH indicator, then an on-demand "Ask AI" button sends that plus temperature/phase/biomass to Gemini for one concrete recommendation. See §5.10.
-- **Dashboard:** fully built — live biomass chart, specific growth-rate (μ) chart, an animated top-down "petri dish" visualization, a Real-mode/Demo-mode toggle, a dark theme throughout, a live camera feed, a simulated pH indicator, and an AI advisor. Full build log in §5.
+- **Dashboard:** fully built, dark-themed, in a two-region layout — left: a tall full-bleed camera feed + a colony-timelapse growth render + core metrics; right: four time-series graphs (biomass, specific growth rate μ, temperature, simulated pH) plus an AI advisor. A Real/Demo mode toggle switches between honest slow real-instrument pace (time axis in minutes) and an accelerated, hair-dryer-triggered demo showcase (time axis in seconds). Full build log in §5 (latest changes in §5.11).
 
 ---
 
@@ -235,11 +235,11 @@ Two more issues surfaced later, both traced to the same root cause:
 
 A toggle button (top-right of the banner) switches the biomass visualization between two paces — both use the *identical* growth-kinetics formula (`growth_rate()` / `update_population()`, ported 1:1 from `src/models/growth_model.py` into JavaScript in `app.js`), just integrated at different speeds:
 
-- **Real mode** — uses `biomass_actual`/`biomass_ideal`/`biomass_predicted` exactly as sent by the edge server (true instrument pace, driven by `SIM_HOURS_PER_SECOND=0.05` on the Pi).
-- **Demo mode** — integrates the same formula client-side, driven by the same real `packet.temp` reading, but at `DEMO_HOURS_PER_SECOND = 0.15` — tuned so that, solving the logistic curve's time-to-95%-grown: room temperature (~1.3 growth-rate/h in this model) fills the plate in ~35–40s, a hair-dryer blast near the model's 37°C optimum (~2.4/h) fills it in ~18–20s. Fast enough to pay off within a live demo, slow enough to still read as "growing" rather than instant.
+- **Real mode** — uses `biomass_actual`/`biomass_ideal`/`biomass_predicted` exactly as sent by the edge server (true instrument pace, driven by `SIM_HOURS_PER_SECOND` on the Pi). Later tuned very slow — see §5.11.
+- **Demo mode** — integrates the same formula client-side, driven by the same real `packet.temp` reading, but time-compressed (`DEMO_HOURS_PER_SECOND`) for a punchy live showcase. Later gained a temperature gate so it stays near-frozen at room temp and blooms only when heated past ~30°C — see §5.11.
 - A **"Demo version"** badge appears whenever demo mode is active, so it's never mistaken for real sensor-driven data.
-- **Subtlety:** the growth-rate (μ) chart derives its rate from Δbiomass/Δtimestamp. In demo mode the *displayed* biomass advances on a compressed clock while `packet.timestamp` is still real wall-clock time — feeding that straight through made μ read in the thousands. Fixed by passing the actual simulated Δt hours alongside the packet (`_dtHoursOverride`) so μ uses the right denominator, while the chart's x-axis still shows real elapsed demo-seconds (more intuitive for someone watching live).
-- Switching modes resets both charts and the petri dish (`resetGrowthDisplays()` / `viz3d.resetViz()`) so there's no visual discontinuity between real and demo data.
+- Switching modes resets all charts and the petri dish (`resetGrowthDisplays()` / `viz3d.resetViz()`) so there's no visual discontinuity between real and demo data.
+- **μ chart correctness:** the specific growth rate μ is not derived on the frontend from Δbiomass/Δwall-clock (that inflated it by the time-compression factor, since biomass advances on a compressed sim-clock). Instead every data source *reports* the realized μ = r·(1 − N/K) directly (`growth_rate_per_h` in the packet — edge server, mock, and demo compute all set it) and the chart just plots it. See §5.11.
 
 ### 5.8 Dark theme + typography
 
@@ -265,6 +265,28 @@ Real bacteria don't change color enough to see on camera, so instead of inventin
 - The reading is injected into the WebSocket packet's `ph_indicator` field by `ui/api/main.py::_with_ph_reading`, reusing whatever frame the camera's MJPEG loop already fetched (`camera.get_cached_real_frame()`) rather than doing a second Pi round-trip per telemetry tick.
 - `ui/api/advisor.py` sends the current temperature/phase/biomass/pH to **Gemini**, fine-tuned with the same E. coli reference numbers driving the rest of the app (37°C optimum, 8–50°C range, phenol-red pH convention), and asks for one short actionable recommendation. Triggered manually by an "Ask AI" button (`POST /api/advisor/feedback`) — deliberately not called automatically every telemetry tick, to avoid burning API quota. Soft-imports the client library and checks for `GEMINI_API_KEY`, degrading to a clear "not configured" message rather than crashing.
 - **Note:** `google-generativeai` is deprecated/unmaintained as of late 2025 — this uses **`google-genai`** (`from google import genai`, `genai.Client(...)`), the current SDK. Verified the request path is correct by calling the real Gemini endpoint with a deliberately invalid key and confirming it returns `API_KEY_INVALID` (i.e. the request reached Google correctly) rather than a client-side error.
+
+### 5.11 Colony timelapse render, minutes/seconds axes, more graphs, two-region layout
+
+A round of "make it look and behave like a real experiment" changes.
+
+**Growth visualization rebuilt as a colony timelapse.** The earlier "accumulating tiny dots" read as abstract. It's now modeled on a real bacterial-colony timelapse: `COLONY_COUNT` colonies seed at fixed points scattered uniformly over the dish area (`r = R·√(random)`), and each one *expands* as a growing circle as biomass rises. Rendered as a `THREE.InstancedMesh` of flat, soft-edged circle sprites with per-instance scale + color (per-instance scale gives each colony its own growth without a custom shader — the earlier hand-written `ShaderMaterial` corrupted the rest of the scene, see §5.5). Each colony has a `seedThreshold` spread across the biomass range so a few appear at very low biomass and the rest bloom progressively, merging into a confluent lawn at saturation. Cream colonies on a warm dark-amber agar (`makeRadialTexture`), near-top-down orthographic camera. Colony coverage = `biomass_actual / carrying-capacity` (running max of `biomass_ideal`, floored), so it auto-scales across data sources.
+
+**Real growth slowed way down; demo gained a temperature gate.** To make the real-vs-demo contrast real:
+- **Real mode:** `SIM_HOURS_PER_SECOND` on the Pi dropped to **0.0005** (was 0.05). At room temperature the plate barely develops over the minutes you'd watch — just a few tiny colonies — which is honest for real E. coli (doublings take tens of minutes). Requires restarting the Pi so biomass resets from 0.05 (a long-running Pi is saturated at 5.0 and shows a full plate).
+- **Demo mode:** `DEMO_HOURS_PER_SECOND = 0.28` plus a **demo-only temperature gate** `smoothstep(28, 38, temp)` multiplying the growth rate — ~0 below 28°C (near-frozen at room temp), ramping up sharply past 30°C toward full at 37°C. So the plate stays empty until the sensor is warmed with a hair dryer, then blooms fast. This gate is deliberate demo theatre; **real mode uses the pure formula unchanged**.
+
+**Time axis: minutes in real mode, seconds in demo mode.** All time-series charts read the current mode's `TIME_UNIT` (real → "Time (min)", divide elapsed seconds by 60; demo → "Time (s)"). `MAX_POINTS` raised to 900 (a 15-minute window at 1 pt/s). Axis labels swap on mode toggle.
+
+**Two new graphs (temperature + pH).** The metric readouts were supplemented with time-series charts: a **Temperature** chart (live DS18B20, dashed reference lines at 30°C bloom threshold and 37°C optimum) and a **pH** chart (simulated phenol-red reading, dashed reference at the 6.8 good/bad line). Dashed reference lines are drawn by a tiny inline Chart.js plugin (`hLinePlugin`) rather than pulling in the annotation plugin. A shared `timeSeriesOptions()` helper keeps all four charts styled as one system.
+
+**pH good/bad rule for E. coli.** Per the culture's requirement, `color_ph.py` now classifies **pH ≤ 6.8 as "good"** (the culture is acidifying its medium via mixed-acid fermentation, the healthy sign here) and **pH > 6.8 as "bad"**, which raises a dashboard alert (`main.py::_with_ph_reading` sets `packet["alert"]`). Frontend shows a green/red `ph-indicator--good`/`--bad` state.
+
+**Two-region layout.** `.dashboard` is now two side-by-side regions, each its own CSS grid so their row rhythms are independent:
+- **Left region** — the camera spans a tall top row (full-bleed: the video fills the panel edge-to-edge with the title floated on top via `.panel--media` + `.panel__title--overlay`), and below it the growth render (also full-bleed, `FIT_MARGIN` reduced to 1.08 so the dish nearly fills its panel) sits beside the Core Metrics.
+- **Right region** — the 2×2 graph grid (biomass, μ, temperature, pH) with the AI advisor spanning below.
+
+This decoupling is what lets the camera be tall on the left without stretching the graphs on the right (a single shared grid couldn't do both).
 
 ---
 
@@ -293,6 +315,8 @@ Real bacteria don't change color enough to see on camera, so instead of inventin
 - [x] Dashboard silently showing fake/stale data when the Pi disconnects — **RESOLVED**: explicit `hardware_connected` flag, distinct disconnected UI state, see §5.9.
 - [x] Blocking network calls freezing the entire dashboard server when the Pi was unreachable — **RESOLVED**: moved to worker threads via `asyncio.to_thread`, see §5.9.
 - [x] Simulated pH indicator (real camera color, phenol-red interpretation) + Gemini AI advisor — **RESOLVED**, see §5.10.
+- [x] Colony-timelapse growth render, temperature + pH time-series graphs, minutes/seconds time axes, correct μ chart, slow real / gated-fast demo growth, two-region layout — **RESOLVED**, see §5.11.
+- [x] pH good/bad rule for E. coli (≤ 6.8 good, > 6.8 bad + alert) — **RESOLVED**, see §5.11.
 - [ ] Integrate physical actuators (heater/fan) — pending. Until then, `heater_power_pct`/`fan_speed_pct` report 0 (not simulated), so nothing on screen is faked.
 - [ ] Integrate a humidity sensor (DHT22) — pending. Until then, `humidity_pct` reports 0 on the dashboard, and the growth model applies no humidity term at all (neutral, not a guessed percentage — see §5.9).
 - [ ] Point the camera at the actual flask/chamber — it currently shows whatever the Pi happens to be aimed at, which affects the pH reading's meaningfulness.
