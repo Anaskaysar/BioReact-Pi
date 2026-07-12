@@ -1,0 +1,347 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage[margin=1in]{geometry}
+\usepackage{textcomp}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{parskip}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{linkblue}{RGB}{0,90,160}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkblue,
+    urlcolor=linkblue,
+    citecolor=linkblue,
+    pdftitle={BioReact-Pi: An Edge-AI Bioreactor Controller},
+    pdfauthor={BioReact-Pi Team}
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    breaklines=true,
+    frame=single,
+    columns=fullflexible,
+    xleftmargin=1em,
+    xrightmargin=1em
+}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{BioReact-Pi}
+\fancyhead[R]{\leftmark}
+\fancyfoot[C]{\thepage}
+
+\setlist[itemize]{topsep=2pt,itemsep=2pt,parsep=0pt}
+\setlist[enumerate]{topsep=2pt,itemsep=2pt,parsep=0pt}
+
+% ---------------------------------------------------------------------------
+\title{\textbf{BioReact-Pi}\\[4pt]\Large An Edge-AI Bioreactor Controller on Raspberry Pi}
+\author{BioReact-Pi Team \\ \small Solarcemir (Hardware/Embedded) \; \textbar\; Arkesh (Growth Model \& Control) \\ \small Anas (UI \& Digital Twin) \; \textbar\; Anna (Bio/Med) \\[4pt] \small CU Hacking --- QNX Hackathon Challenge}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+\noindent
+BioReact-Pi is an edge-computing bioreactor monitoring system built around a Raspberry Pi. It reads a live temperature sensor inside a culture chamber, feeds that reading into a logistic bacterial growth model to predict biomass in real time, and streams the result to a live web dashboard alongside a camera feed, a simulated colorimetric pH readout, and an on-demand AI advisor. This report documents the project in two parts: a general overview of the problem, the solution, and the features offered, followed by a technical deep dive into the sensors, communication protocols, growth model, and software architecture that make it work.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\part*{Part I --- Project Overview}
+\addcontentsline{toc}{part}{Part I --- Project Overview}
+% =============================================================================
+
+\section{Introduction and Problem Statement}
+
+Industrial biotechnology relies on living microorganisms to manufacture products ranging from insulin and vaccines to biofuels and cultured food. These organisms are grown in \emph{bioreactors} --- controlled vessels that must maintain a narrow band of environmental conditions (temperature above all) for the culture to grow predictably. A deviation of only a few degrees can push a bacterial population out of its productive growth phase, stall a fermentation run, or kill the batch outright, at a real economic cost that scales with batch size.
+
+Commercial bioreactor controllers exist, but they are expensive, closed, and inaccessible to students, small labs, and hobbyist bio-makers who want to understand or experiment with the underlying control loop. BioReact-Pi asks: \emph{how much of a real bioreactor's sensing and monitoring loop can be built on commodity, low-cost hardware, with an honest, transparent view into what the system actually knows at any moment?}
+
+\section{Our Solution}
+
+BioReact-Pi closes the loop between \textbf{sensing}, \textbf{prediction}, and \textbf{visualization} on a Raspberry Pi:
+
+\begin{enumerate}
+    \item A real digital temperature sensor (and a real humidity sensor) inside the chamber is read continuously by an \emph{edge service} running directly on the Pi.
+    \item That live reading drives a \textbf{logistic growth model} --- the same mathematics used in real microbiology to describe bacterial population dynamics --- which integrates a predicted biomass curve second by second.
+    \item A Raspberry Pi Camera Module gives a live view of the chamber, and its image is also used to extract a real color signal that is interpreted through a simulated phenol-red pH convention (the same colorimetric indicator used in real cell-culture media).
+    \item Everything is streamed over a WebSocket connection to a browser-based dashboard: biomass and growth-rate curves, a live camera panel, an animated top-down ``petri dish'' colony visualization, and temperature/pH charts, all updating roughly once per second.
+    \item An on-demand AI advisor (Google Gemini) can be asked, at the press of a button, to read the current state of the culture and suggest one concrete corrective action.
+\end{enumerate}
+
+A guiding principle throughout the build was \textbf{honesty about what is and isn't measured}: the dashboard never fabricates a plausible-looking number for a sensor that isn't wired up. Unmeasured quantities are reported as zero or as an explicit ``disconnected'' state rather than being guessed or interpolated, and the growth model itself follows the same rule --- if no humidity reading is available, the model applies a neutral factor rather than assuming a number.
+
+\section{Key Features}
+
+\begin{itemize}
+    \item \textbf{Real sensor telemetry} --- a DS18B20 digital temperature probe and a DHT11 humidity sensor, both read live from the physical chamber.
+    \item \textbf{Live chamber camera} --- a Raspberry Pi Camera Module feed shown directly in the dashboard, not a placeholder graphic.
+    \item \textbf{Predictive growth model} --- a logistic growth curve calibrated to the \emph{E.~coli} reference range (positive growth strictly between 8\textdegree{}C and 50\textdegree{}C, peaking at 37\textdegree{}C), run identically on the Pi and mirrored in the browser.
+    \item \textbf{Simulated pH indicator} --- real image color extracted from a region of interest on the camera feed, interpreted through the phenol-red colorimetric convention used in real culture media.
+    \item \textbf{AI advisor} --- an on-demand Gemini-backed assistant that reads temperature, growth phase, biomass, and simulated pH, and returns one concrete recommendation.
+    \item \textbf{Live dashboard} --- biomass growth chart, specific growth-rate (\(\mu\)) chart, temperature chart, pH chart, an animated colony-timelapse visualization, and core metric cards, all dark-themed and updating in real time.
+    \item \textbf{Real mode vs.\ Demo mode} --- a toggle switches between an honest, instrument-paced real-time view and a time-compressed demo view driven by the same formula and the same live sensor, useful for a fast, visible showcase (e.g.\ heating the sensor with a hair dryer during a live demo).
+    \item \textbf{Mock and hardware data sources} --- the entire dashboard runs identically against a simulated data source (for development or demoing without hardware) or the real Pi edge service, switchable via a single environment variable.
+    \item \textbf{Honest disconnection handling} --- if the Pi is unreachable, the dashboard explicitly shows a ``DISCONNECTED'' state instead of silently freezing on or replaying old/canned data.
+    \item \textbf{Digital twin} --- an offline simulator for running growth ``what-if'' scenarios without touching the physical culture.
+    \item \textbf{Standalone kiosk display} --- the exact same live dashboard can be shown full-screen on a small monitor physically attached to the Raspberry Pi, not just on an operator's laptop.
+\end{itemize}
+
+\section{Development Journey}
+
+The project's original target platform was QNX (a real-time embedded OS) running on a Raspberry Pi~5, as required by the hackathon challenge track it was built for. Early in development, the team discovered that QNX's GPIO access model --- IPC message-passing through a resource-manager process, rather than direct memory-mapped register access --- made the microsecond-precision timing required by the DS18B20's 1-Wire protocol impractical to bit-bang reliably in Python (full root-cause diagnostics are preserved in the project's engineering log). Given the hackathon's time budget, the team made the pragmatic call to pivot the operating system to Ubuntu/Raspberry Pi~OS, which handles 1-Wire devices through a native, well-tested kernel driver instead of hand-rolled timing-critical code. This pivot is documented in detail as an example of a real engineering trade-off made under a deadline, not hidden after the fact.
+
+\section{Target Use Case and Impact}
+
+BioReact-Pi is aimed at educational and small-scale experimental settings: a classroom, a student lab, or a hobbyist bio-maker space where a transparent, inspectable, low-cost bioreactor monitor is more valuable than a black-box commercial unit. By combining a real predictive biology model with real sensor data and an honest, uncompromising UI (no faked values, ever), it doubles as a teaching tool for both control systems and microbiology growth kinetics.
+
+\newpage
+% =============================================================================
+\part*{Part II --- Technical Documentation}
+\addcontentsline{toc}{part}{Part II --- Technical Documentation}
+% =============================================================================
+
+\section{System Architecture}
+
+BioReact-Pi is split into three cooperating processes, typically running on two machines connected over a direct Ethernet link:
+
+\begin{lstlisting}
++----------------------+   GET /api/telemetry        +------------------------+       WebSocket        +----------------+
+|   Raspberry Pi        |   GET /api/camera/stream    |   Dashboard backend    |  (ws/telemetry, ~1/s)  |   Browser      |
+|   DS18B20 (1-Wire)     |----------------------------->  FastAPI, port 8000   |------------------------>  Dashboard UI  |
+|   DHT11 (humidity)     |     (every ~1s, port 8080)  |  ui/api/*              |---- POST /api/advisor ->  Chart.js +   |
+|   Camera Module        |                             |                        |      (Gemini)           Three.js      |
+|   edge/pi_edge_server  |                             |                        |                                        |
+|   .py + GrowthModel    |                             |                        |                                        |
++----------------------+                             +------------------------+                        +----------------+
+\end{lstlisting}
+
+\textbf{Data flow:}
+\begin{enumerate}
+    \item \texttt{edge/pi\_edge\_server.py} runs directly on the Raspberry Pi. It reads the DS18B20 and DHT11 sensors, captures a camera frame on request, integrates the growth model against the real temperature every second, and exposes all of it as a small HTTP JSON/JPEG API.
+    \item \texttt{ui/api/hardware.py}, part of the dashboard backend (which typically runs on an operator's laptop), polls those edge endpoints and normalizes the payload into the dashboard's WebSocket packet shape. When no hardware is configured, \texttt{ui/api/telemetry.py} generates an equivalent packet from an internal mock simulation instead. \texttt{ui/api/color\_ph.py} extracts a real color sample from the camera frame's region of interest and overlays a simulated pH reading onto the same packet.
+    \item \texttt{ui/dashboard/js/app.js} renders everything client-side: Chart.js for the time-series charts, Three.js for the colony visualization, plus the metric cards and camera panel, all driven from the single WebSocket stream. The ``Ask AI'' button makes a separate, on-demand REST call to \texttt{ui/api/advisor.py}, which queries Gemini.
+\end{enumerate}
+
+\section{Hardware Components}
+
+\subsection{Sensors}
+
+\begin{center}
+\begin{tabular}{@{}p{3.3cm}p{3.6cm}p{3cm}p{4.5cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Interface} & \textbf{Status} & \textbf{Purpose} \\
+\midrule
+DS18B20 & 1-Wire digital (GPIO17, kernel \texttt{w1-gpio}/\texttt{w1-therm} driver) & Working & Chamber temperature, the primary signal driving the growth model \\
+DHT11 & Single-wire bit-banged protocol via \texttt{lgpio} & Working & Chamber relative humidity, used as a secondary growth-rate factor \\
+Pi Camera Module & CSI ribbon, \texttt{picamera2} & Working & Chamber view; also the input to the simulated pH color extraction \\
+Heater / cooling fan & --- & Not wired & Actuation loop is a planned extension; dashboard reports 0\% power honestly rather than simulating a value \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{DS18B20 wiring and OS-level configuration}
+
+The DS18B20 uses three pins: DATA (to GPIO17, through an extension cable into a breadboard --- a hand-held connection produced erratic $\pm$30\textdegree{}C jumps between consecutive readings due to intermittent contact), VCC (3.3\,V), and GND. On Raspberry Pi~OS/Ubuntu, the 1-Wire bus is enabled at the kernel level by adding the following line to \texttt{/boot/firmware/config.txt}:
+
+\begin{lstlisting}
+dtoverlay=w1-gpio,gpiopin=17,pullup=on
+\end{lstlisting}
+
+After a reboot, the sensor appears as a directory prefixed \texttt{28-} under \texttt{/sys/bus/w1/devices/} (a \texttt{00-} prefix instead indicates an insufficient pull-up). The kernel driver performs the microsecond-precision 1-Wire bit-banging and CRC verification directly in hardware/kernel space, so user-space code only needs to read a plain text file:
+
+\begin{lstlisting}
+cat /sys/bus/w1/devices/28-000000870030/w1_slave
+a3 01 4b 46 7f ff 0c 10 d8 : crc=d8 YES
+a3 01 4b 46 7f ff 0c 10 d8 t=26187
+\end{lstlisting}
+
+\texttt{YES} confirms a valid CRC; \texttt{t=26187} means 26.187\textdegree{}C. A persistent reading of exactly \texttt{85000} (85.0\textdegree{}C) is the sensor's power-on reset value and indicates a power or connection fault rather than a real temperature. The edge service smooths this raw reading with a median filter over the last five samples to reject residual wiring noise before it reaches the growth model.
+
+\subsection{Why not QNX bit-banging}
+
+The project's first attempt targeted a Raspberry Pi~5 running QNX, accessed over VNC/SSH, with the plan of implementing the 1-Wire protocol manually (``bit-banging'') in Python using QNX's \texttt{rpi\_gpio} module. QNX exposes GPIO through a resource-manager process communicating via IPC message passing rather than direct memory-mapped registers; each \texttt{GPIO.setup()}/\texttt{GPIO.output()}/\texttt{GPIO.input()} call was empirically measured at 13--58\,\textmu s of intrinsic latency. Since the 1-Wire protocol requires 1--15\,\textmu s pulses to distinguish a ``1'' bit from a ``0'' bit, with read windows of at most \textasciitilde60\,\textmu s, a single IPC call's latency already exceeds the entire time budget for one bit --- making precise bit-banging from Python on QNX fundamentally unreliable, not merely inconvenient. The team verified this with direct timing instrumentation and Read-ROM protocol isolation tests before deciding to pivot the OS rather than continue fighting an architectural limitation.
+
+\section{Growth Model}
+
+The predictive core of BioReact-Pi is a logistic bacterial growth model (\texttt{src/models/growth\_model.py}), duplicated intentionally in three places --- the Python module, an embedded copy inside the self-contained edge server, and a 1:1 JavaScript port used by the dashboard's demo mode --- so both the physical device and the browser can integrate the identical curve independently, verified to agree by sweeping the same temperature range through all three and comparing output.
+
+\subsection{Temperature effect}
+
+Growth rate depends on temperature through a piecewise-linear response curve, calibrated to the \emph{E.~coli} reference range: growth is strictly positive between \(8\)\textdegree{}C and \(50\)\textdegree{}C, exactly zero at those two boundaries, and peaks at the physiological optimum of \(37\)\textdegree{}C. Outside that range the effect goes negative, modeling die-off under cold or heat stress, and continues to worsen linearly rather than clamping flat at the curve's extremes:
+
+\[
+f_T(T) = \begin{cases}
+\text{(cold-stress ramp, extrapolated)} & T < 2\ ^\circ\text{C} \\
+\text{interpolated segment} & 2\ ^\circ\text{C} \le T \le 50\ ^\circ\text{C} \\
+\text{(heat-stress ramp, extrapolated)} & T > 50\ ^\circ\text{C}
+\end{cases}
+\]
+
+with anchor points \((2, -0.3)\), \((8, 0.0)\), \((22.5, 0.55)\), \((37, 1.0)\), \((45, 0.35)\), \((50, 0.0)\), interpolated piecewise-linearly and extrapolated beyond the first/last segment's slope.
+
+\subsection{Humidity effect}
+
+When a humidity reading is available, a second piecewise-linear factor \(f_H(H) \in [0.02, 1]\) scales growth down under dry conditions (never below a small positive floor, and never lethal on its own --- only temperature drives death in this model). Critically, when no humidity sensor is present, \(f_H\) is \emph{not} guessed: \texttt{growth\_rate(temp\_c, humidity\_pct=None)} applies a neutral multiplier of \(1.0\), so a real deployment running on temperature alone is not silently penalized by an assumed humidity value it never measured.
+
+\subsection{Combined growth rate}
+
+\[
+r(T, H) = \begin{cases}
+f_T(T) & \text{if } f_T(T) < 0 \quad \text{(temperature-driven death, humidity irrelevant)} \\
+r_{\max} \cdot f_T(T) \cdot f_H(H) & \text{if } f_T(T) \ge 0
+\end{cases}
+\]
+
+where \(r_{\max} = 2.4\) divisions/hour is the maximum growth rate at optimal temperature and humidity.
+
+\subsection{Population integration}
+
+Biomass is integrated over each time step using the closed-form solution of the logistic equation (growth) or simple exponential decay toward a small survivor floor (death), so the curve eases smoothly into the chamber's carrying capacity \(K\) instead of hitting a hard ceiling:
+
+\[
+N(t + \Delta t) = \begin{cases}
+\dfrac{K}{1 + \left(\dfrac{K - N(t)}{N(t)}\right) e^{-r\,\Delta t}} & r > 0 \\[10pt]
+\max\!\big(N(t)\, e^{r\,\Delta t},\ N_{\min}\big) & r < 0 \\[4pt]
+N(t) & r = 0
+\end{cases}
+\]
+
+The instantaneous growth phase (\emph{lag}, \emph{exponential}, \emph{stationary}, \emph{declining}, \emph{death}) is derived directly from the current rate \(r\) via fixed thresholds, and doubling time is reported as \(\ln(2)/r\) (converted to minutes) whenever \(r > 0\).
+
+\subsection{Specific growth rate (\(\mu\)) chart}
+
+The dashboard's second chart plots the classical microbiology quantity \(\mu = \dfrac{\ln(N_2/N_1)}{\Delta t_{\text{hours}}}\) between consecutive biomass samples, which peaks during exponential phase and flattens toward zero at stationary phase. Every data source (edge server, mock simulation, and demo mode) reports this realized \(\mu\) directly in its telemetry packet rather than having the frontend re-derive it from wall-clock deltas, since demo mode's time-compressed clock would otherwise inflate the computed rate by the compression factor.
+
+\section{Communication Protocols}
+
+\subsection{Edge service HTTP API}
+
+\texttt{edge/pi\_edge\_server.py} is a single, self-contained Flask application deployable to the Pi on its own (it embeds its own copy of the growth model, so no repository clone is needed on the device). It exposes:
+
+\begin{center}
+\begin{tabular}{@{}p{4.2cm}p{9.3cm}@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{GET /api/telemetry} & Full JSON telemetry packet (temperature, humidity, biomass actual/ideal/predicted, growth phase, growth rate) in the exact shape \texttt{ui/api/hardware.py} expects \\
+\texttt{GET /api/camera/stream} & One fresh JPEG frame per request (a plain snapshot-per-request contract, since the dashboard backend already polls in a loop for its own MJPEG panel); returns HTTP 503 if no camera is attached, without affecting any other route \\
+\texttt{GET /data} & Legacy endpoint, \texttt{\{"temperature": ..., "unit": "Celsius"\}} \\
+\texttt{GET /health} & Liveness check \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every operational parameter (target temperature, simulated hours-per-second integration rate, sensor device paths, port, camera resolution) is configured via environment variables rather than hardcoded, so the same file can be tuned for real-time or accelerated-demo pacing without editing code.
+
+\subsection{Dashboard backend $\leftrightarrow$ browser}
+
+The FastAPI dashboard backend (\texttt{ui/api/*}) serves the frontend over three channels: a WebSocket at \texttt{/ws/telemetry} pushing one packet per second, an MJPEG-style polling endpoint for the camera panel, and a plain REST call (\texttt{POST /api/advisor/feedback}) for the on-demand AI advisor, which is deliberately not called automatically on every telemetry tick, to avoid burning API quota.
+
+\subsection{Networking topology}
+\label{sec:networking-topology-ref}
+
+The Raspberry Pi and the operator's laptop are typically connected over a \textbf{direct Ethernet link} with no router in between, using manually assigned link-local addresses (e.g.\ \texttt{169.254.243.1/16} on the laptop, \texttt{169.254.243.2/16} on the Pi) via \texttt{nmcli}. This topology has one important consequence that shaped several fixes described below: \textbf{there is no DNS resolution and no route to the public internet} on that link --- only the Pi and the laptop can see each other.
+
+\subsection{Blocking I/O and event-loop starvation}
+
+An early bug traced to this networking setup: \texttt{fetch\_hardware\_packet()} and \texttt{fetch\_hardware\_frame()} used a blocking \texttt{urllib.request.urlopen()} call invoked directly inside \texttt{async def} route handlers. In \texttt{asyncio}, a blocking call inside a coroutine freezes the entire single-threaded event loop for its duration --- not just the request that triggered it, but every other connection the server is handling, including brand-new WebSocket handshakes and unrelated routes like \texttt{/health}. This was reproduced directly: with the Pi powered off, a freshly connecting WebSocket client received zero packets for 15+ seconds. The fix wraps every blocking hardware I/O call in \texttt{asyncio.to\_thread(...)}, moving it to a worker thread so the event loop stays responsive; after the fix, the first packet arrives in 346\,ms even with the Pi unreachable.
+
+\subsection{Honest disconnection semantics}
+
+Every hardware-mode telemetry packet carries an explicit \texttt{hardware\_connected} boolean. A true cold start (never connected) reports zeroed values and \texttt{status: "DISCONNECTED"}; a mid-session drop reuses the last real reading but marks it stale and flags it, rather than silently loading a static example file and presenting it as live. The frontend renders \texttt{--} in the metric cards and a distinct muted banner state whenever this flag is false, so a viewer can never mistake a stale or absent reading for a live one. The camera panel follows the identical rule, rendering a distinct ``CAMERA OFFLINE'' placeholder on a hardware-mode fetch failure instead of silently falling back to the mock mode's synthetic render.
+
+\subsection{Kiosk display on the Pi's own monitor}
+
+Beyond an operator's laptop browser, the exact same dashboard can be shown full-screen on a small monitor physically attached to the Raspberry Pi (\texttt{scripts/pi\_kiosk\_dashboard.sh}, launching Chromium in \texttt{--kiosk} mode against the laptop-hosted dashboard URL). This surfaced a subtle bug worth documenting: the dashboard's static HTML/CSS shell rendered correctly on the Pi's screen, but no live data ever populated it, even though the identical URL worked perfectly from the laptop's own browser. Direct inspection of the Chromium DevTools console on the Pi revealed \texttt{net::ERR\_NAME\_NOT\_RESOLVED} for third-party CDN hosts (Three.js, Chart.js, and Google Fonts were originally loaded from public CDNs). Because the Pi-laptop link has no DNS or internet route by design (\S\ref{sec:networking-topology-ref}), those requests failed --- and because the frontend's entry point is an ES module (\texttt{<script type="module">}) importing Three.js by a bare specifier, a single failed import blocked the \emph{entire} script from executing, not just the failed dependency. The static HTML rendered from server-delivered markup, but zero JavaScript --- including the WebSocket connection --- ever ran. The fix vendors every third-party dependency (Three.js, \texttt{OrbitControls}, Chart.js, and its date-fns adapter) locally under \texttt{ui/dashboard/vendor/}, served by the dashboard's own backend, so the Pi's browser never needs to leave the link-local network. This was verified with an automated test that blocks every network request to a hostname other than \texttt{localhost}, precisely reproducing the Pi's offline condition, before being confirmed on the physical kiosk display.
+
+\section{Dashboard Software Stack}
+
+\begin{center}
+\begin{tabular}{@{}p{3.6cm}p{9.9cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Role} \\
+\midrule
+Python / Flask & Edge service on the Pi (\texttt{edge/pi\_edge\_server.py}) \\
+\texttt{picamera2} & Pi Camera Module capture \\
+Python / FastAPI & Dashboard backend --- WebSocket telemetry, camera proxy, static file serving \\
+Pillow & Real-time ROI color extraction for the simulated pH indicator \\
+\texttt{google-genai} & Gemini AI advisor client (the current SDK; the older \texttt{google-generativeai} package is deprecated) \\
+Chart.js & Biomass, growth-rate, temperature, and pH time-series charts \\
+Three.js & Colony-timelapse growth visualization (orthographic camera, instanced-mesh colony sprites) \\
+WebSocket + polling MJPEG & Live telemetry and camera streaming to the browser \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Colony-timelapse visualization}
+
+The growth panel models a real bacterial-colony timelapse rather than an abstract cluster: a fixed number of colonies seed at positions sampled uniformly over the dish's circular area (using \(r = R\sqrt{u}\) for a uniform draw \(u \in [0,1]\), which is the correct sampling rule for uniform density per unit area on a disc, as opposed to \(r = Ru\) which bunches points near the center). Each colony expands as a growing circle sprite as biomass rises, rendered as a \texttt{THREE.InstancedMesh} with per-instance scale and color so no custom shader is required. Colony coverage is normalized against the running maximum of the ideal biomass curve (a stand-in for carrying capacity), so the same rendering logic auto-scales correctly across the mock, real-hardware, and demo data sources.
+
+\subsection{Real mode vs.\ demo mode}
+
+Both modes integrate the identical growth formula; only the clock and, in demo mode only, an additional temperature gate differ:
+
+\begin{itemize}
+    \item \textbf{Real mode} --- uses the biomass values reported directly by the edge server, integrated at true instrument pace (tuned slow enough, \(\sim\)0.0005 simulated hours per wall-clock second, that a live viewing session shows only a few tiny colonies at room temperature, which is the biologically honest behavior for real \emph{E.~coli} doubling times).
+    \item \textbf{Demo mode} --- integrates the same formula client-side on a compressed clock (\(\sim\)0.28 simulated hours per wall-clock second) and applies a demo-only smoothstep gate on temperature (near-zero growth multiplier below 28\textdegree{}C, ramping sharply to full by 37\textdegree{}C), so the plate stays empty at room temperature and blooms quickly once the sensor is deliberately heated --- a presentation aid clearly marked with a ``Demo version'' badge, and never applied to real-mode data.
+\end{itemize}
+
+Time axes swap correspondingly: minutes for real mode's slow pace, seconds for demo mode's compressed pace.
+
+\section{Simulated pH Indicator}
+
+Real bacterial cultures in this setup do not change color enough to be visible on camera, so rather than fabricating an arbitrary signal, the dashboard simulates having dosed the medium with \textbf{phenol red} --- the real colorimetric pH indicator used in cell-culture media (DMEM, RPMI, etc.): yellow at low pH, red/pink near neutral, magenta/purple at high pH. Only the pH \emph{interpretation} of the color is simulated; the color itself is extracted from a real image.
+
+\texttt{ui/api/color\_ph.py} crops the same region-of-interest box shown on screen, downsamples and averages it, converts to HSV, and maps hue to pH via a piecewise-linear reference curve fit to the phenol-red convention. Because the real color path (yellow $\rightarrow$ red $\rightarrow$ magenta $\rightarrow$ purple) crosses the 0\textdegree/360\textdegree{} wraparound point of the hue wheel, reference hues above 180\textdegree{} are unwrapped into negative degrees before interpolation to keep the mapping monotonic. Per the culture's requirement, pH $\le 6.8$ is classified as ``good'' (mixed-acid fermentation acidifying the medium is the healthy sign for this organism) and pH $> 6.8$ as ``bad,'' raising a dashboard alert.
+
+\section{AI Advisor}
+
+\texttt{ui/api/advisor.py} sends the current temperature, growth phase, biomass, and simulated pH reading to \textbf{Google Gemini} (via the \texttt{google-genai} SDK), primed with the same \emph{E.~coli} reference numbers driving the rest of the application (37\textdegree{}C optimum, 8--50\textdegree{}C viable range, phenol-red pH convention), and requests one short, actionable recommendation. It is triggered manually via an ``Ask AI'' button rather than automatically on every telemetry tick, to control API usage. The client library is soft-imported and the request checks for a configured \texttt{GEMINI\_API\_KEY}, degrading to a clear ``not configured'' message rather than crashing when the key is absent.
+
+\section{Reliability and Design Principles}
+
+Several design decisions recur throughout the system and are worth stating explicitly as engineering principles rather than incidental choices:
+
+\begin{itemize}
+    \item \textbf{Report zero or ``disconnected,'' never a guess.} Unmeasured actuator power, an unavailable humidity reading, or an unreachable Pi are all surfaced explicitly rather than backfilled with a plausible-looking number.
+    \item \textbf{One source of truth for the growth model, duplicated deliberately.} The exact same formula exists in Python (twice, once as the shared module and once embedded in the self-contained edge script) and in JavaScript, verified to agree by sweeping identical inputs through all three rather than assumed to match.
+    \item \textbf{Degrade a single subsystem, not the whole service.} A missing camera returns a 503 on just that route; a missing AI key disables just the advisor button; a disconnected Pi marks telemetry stale without stopping the WebSocket stream.
+    \item \textbf{No blocking calls on the event loop.} All network I/O to the Pi runs on worker threads so a slow or dead hardware connection cannot stall the entire dashboard server for every other client.
+\end{itemize}
+
+\section{Known Limitations and Future Work}
+
+\begin{itemize}
+    \item \textbf{Actuators} --- no heater or cooling fan hardware is wired up yet; the control loop is currently read-only (sensing and prediction, no closed-loop actuation).
+    \item \textbf{Camera framing} --- the camera shows whatever the Pi happens to be physically aimed at; the pH reading is only meaningful once it is pointed at the actual culture vessel.
+    \item \textbf{AI advisor} --- requires a user-supplied \texttt{GEMINI\_API\_KEY}; without one, only a ``not configured'' message is shown.
+    \item \textbf{QNX} --- the original hackathon track targeted QNX specifically; the current build runs on Ubuntu/Raspberry Pi~OS for the reasons detailed in Part~II, \S3.3. Revisiting QNX with a kernel-level 1-Wire driver (rather than Python-level bit-banging) remains a possible future direction.
+    \item \textbf{Sensor identity} --- the DS18B20's unique ID (e.g.\ \texttt{28-000000870030}) is specific to the physical sensor and must be re-documented if it is ever replaced; the GPIO pin itself is fixed in the boot configuration, not in the Python code.
+\end{itemize}
+
+\end{document}

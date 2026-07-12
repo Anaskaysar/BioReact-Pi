@@ -112,6 +112,13 @@ class MockTelemetryState:
             "drift_from_baseline": round(drift, 3),
         }
 
+        # Realized specific growth rate μ (1/h) for the mock's own logistic
+        # curve: r·(1 − N/K). Reported directly so the dashboard's μ chart
+        # plots it rather than deriving it from Δbiomass/Δwall-clock (which
+        # would inflate it by the mock's time compression). Matches how the
+        # real edge server reports growth_rate_per_h.
+        growth_rate = max(0.0, GROWTH_R * (1.0 - actual / GROWTH_K))
+
         return {
             "temp": round(temp, 1),
             "humidity": round(humidity, 1),
@@ -120,6 +127,7 @@ class MockTelemetryState:
             "biomass_predicted": round(predicted, 3),
             "biomass_ideal": round(ideal, 3),
             "biomass_actual": round(actual, 3),
+            "growth_rate_per_h": round(growth_rate, 4),
             "phase": phase,
             "status": self.status,
             "color_metric": color_metric,

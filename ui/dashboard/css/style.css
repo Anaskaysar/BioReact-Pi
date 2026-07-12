@@ -89,6 +89,11 @@ body {
   border-bottom-color: var(--accent-blue);
 }
 
+.banner--disconnected {
+  background: rgba(139, 142, 151, 0.12);
+  border-bottom-color: var(--text-muted);
+}
+
 .banner__brand {
   display: flex;
   align-items: baseline;
@@ -147,6 +152,7 @@ body {
 .banner--heating .banner__state { color: var(--accent-red); }
 .banner--stable .banner__state { color: var(--accent-green); }
 .banner--cooling .banner__state { color: var(--accent-blue); }
+.banner--disconnected .banner__state { color: var(--text-muted); }
 
 .banner__phase {
   font-size: 0.8rem;
@@ -221,11 +227,39 @@ header.banner {
   flex: 1;
   min-height: 0;
   display: grid;
-  /* Camera + 3D share equal width; chart + growth-rate + metrics stack in a wider sidebar. */
-  grid-template-columns: 2fr 2fr minmax(300px, 2.5fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  /* Two regions: left (camera + growth render + metrics) and right (graphs
+     + advisor). Each region is its own grid so their row rhythms are
+     independent — the camera can be tall on the left without stretching the
+     graphs on the right. */
+  grid-template-columns: 1.15fr 1.35fr;
   gap: var(--gap);
   padding: var(--gap);
+}
+
+.region {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: var(--gap);
+}
+
+/* Left: camera spans the top (tall); growth render + metrics split below. */
+.region--left {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1.55fr 1fr;
+  grid-template-areas:
+    "camera camera"
+    "viz    metrics";
+}
+
+/* Right: 2x2 graphs, advisor spanning the bottom. */
+.region--right {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr 0.62fr;
+  grid-template-areas:
+    "biomass    growthrate"
+    "temp       ph"
+    "advisor    advisor";
 }
 
 .panel {
@@ -255,29 +289,36 @@ header.banner {
   margin-bottom: 14px;
 }
 
-.panel--camera {
-  grid-column: 1;
-  grid-row: 1 / span 3;
+.panel--camera { grid-area: camera; }
+.panel--viz3d { grid-area: viz; }
+.panel--metrics { grid-area: metrics; }
+.panel--chart { grid-area: biomass; }
+.panel--growthrate { grid-area: growthrate; }
+.panel--temp { grid-area: temp; }
+.panel--ph { grid-area: ph; }
+.panel--advisor { grid-area: advisor; }
+
+/* Full-bleed media panels (camera + growth render): the media fills the
+   whole panel and the title floats on top of it. */
+.panel--media {
+  padding: 0;
+  position: relative;
 }
 
-.panel--viz3d {
-  grid-column: 2;
-  grid-row: 1 / span 3;
+.panel__title--overlay {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  z-index: 3;
+  margin: 0;
+  pointer-events: none;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
 }
 
-.panel--chart {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.panel--growthrate {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.panel--metrics {
-  grid-column: 3;
-  grid-row: 3;
+.panel--media .camera-wrap,
+.panel--media #viz3d-container {
+  flex: 1;
+  border-radius: var(--radius);
 }
 
 .chart-wrap {
@@ -324,6 +365,7 @@ header.banner {
 .banner--heating ~ .dashboard .camera-wrap { border-color: var(--accent-red); }
 .banner--stable ~ .dashboard .camera-wrap { border-color: var(--accent-green); }
 .banner--cooling ~ .dashboard .camera-wrap { border-color: var(--accent-blue); }
+.banner--disconnected ~ .dashboard .camera-wrap { border-color: var(--text-muted); }
 
 .camera-wrap img {
   width: 100%;
@@ -386,6 +428,49 @@ header.banner {
 .color-indicator--alert .color-indicator__value {
   color: #f87171;
 }
+
+.ph-indicator[hidden] {
+  display: none;
+}
+
+.ph-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(11, 14, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+  backdrop-filter: blur(6px);
+  text-align: right;
+}
+
+.ph-indicator__label {
+  font-size: 0.65rem;
+  color: #9aa0ab;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ph-indicator__value {
+  font-family: var(--font-mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #f4f5f7;
+}
+
+.ph-indicator__status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.ph-indicator--good .ph-indicator__status { color: var(--accent-green); }
+.ph-indicator--bad .ph-indicator__status { color: var(--accent-red); }
+.ph-indicator--bad .ph-indicator__value { color: var(--accent-red); }
 
 /* ── Metric cards ── */
 
@@ -462,6 +547,61 @@ header.banner {
 .metric-card--fan .metric-card__bar-fill { background: var(--accent-blue); }
 .metric-card--heater .metric-card__bar-fill { background: var(--accent-red); }
 
+/* ── AI Advisor ── */
+
+.advisor-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.advisor-text {
+  flex: 1;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.advisor-text--error {
+  color: var(--accent-red);
+}
+
+.advisor-text--loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.advisor-button {
+  align-self: center;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent-green);
+  background: var(--accent-green-soft);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: 8px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, opacity 0.2s ease;
+  flex-shrink: 0;
+}
+
+.advisor-button:hover {
+  border-color: var(--accent-green);
+}
+
+.advisor-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 /* ── Footer ── */
 
 .footer {
@@ -494,16 +634,26 @@ header.banner {
   .dashboard {
     flex: none;
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto auto;
     overflow: visible;
   }
 
-  /* Highlights first on mobile too, chart/metrics follow. */
-  .panel--camera { grid-column: 1; grid-row: 1; min-height: 280px; }
-  .panel--viz3d { grid-column: 1; grid-row: 2; min-height: 260px; }
-  .panel--chart { grid-column: 1; grid-row: 3; min-height: 260px; }
-  .panel--growthrate { grid-column: 1; grid-row: 4; min-height: 220px; }
-  .panel--metrics { grid-column: 1; grid-row: 5; }
+  /* Both regions collapse to a single stacked column on mobile. */
+  .region {
+    grid-template-columns: 1fr;
+    grid-template-areas: none;
+  }
+
+  .panel--camera { min-height: 300px; }
+  .panel--viz3d { min-height: 280px; }
+  .panel--metrics { min-height: 180px; }
+  .panel--chart,
+  .panel--growthrate,
+  .panel--temp,
+  .panel--ph { min-height: 230px; }
+  .panel--advisor { min-height: 140px; }
+
+  .advisor-body { flex-direction: column; align-items: stretch; }
+  .advisor-button { align-self: flex-start; }
 
   .banner__alert {
     position: static;
