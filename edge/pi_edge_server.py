@@ -3,27 +3,37 @@
 SELF-CONTAINED single file: reads the real DS18B20 temperature over 1-Wire,
 feeds it into an embedded logistic growth model, and serves the result at
 ``/api/telemetry`` in the exact JSON shape the dashboard backend expects
-(see ``ui/api/hardware.py::normalize_hardware_payload``).
+(see ``ui/api/hardware.py::normalize_hardware_payload``). Also serves a
+plain (no detection/analysis) camera snapshot at ``/api/camera/stream`` if
+a Pi Camera Module is attached — see the "Camera" section below.
 
 The growth math below is a standalone copy of ``src/models/growth_model.py``
 so this file can be dropped onto the Pi by itself (scp/nano) with no other
-project files — you only need Flask installed.
+project files — you only need Flask (and, for the camera, picamera2)
+installed.
 
 Flow:  DS18B20 --> read_temp() --> GrowthModel --> /api/telemetry --> dashboard
+       Pi Camera Module --> capture_jpeg() --> /api/camera/stream --> dashboard
 
 Deploy (on the Pi):
-    pip install flask
+    sudo apt install python3-flask python3-picamera2
     python3 pi_edge_server.py
 
 Then on the laptop, point the dashboard at the Pi:
     BIOREACTOR_DATA_SOURCE=hardware
     BIOREACTOR_HARDWARE_URL=http://169.254.243.2:8080
     python ui/run_dashboard.py
+
+Camera is optional — if picamera2 isn't installed or no camera is attached,
+/api/camera/stream returns 503 and the rest of the service (temperature,
+growth model) keeps working normally; the dashboard falls back to its
+synthetic chamber image automatically (see ui/api/camera.py).
 """
 
 from __future__ import annotations
 
 import glob
+import io
 import math
 import os
 import statistics
@@ -33,7 +43,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify
+from flask import Flask, Response, jsonify
+
+try:
+    import lgpio  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional Pi-only dependency
+    lgpio = None
 
 # =============================================================================
 # Embedded growth model (standalone copy of src/models/growth_model.py)
@@ -60,13 +75,18 @@ def _interpolate(x: float, points: list) -> float:
 
 @dataclass
 class GrowthModel:
-    """Temperature/humidity-driven logistic growth model for a bacterial culture."""
+    """Temperature/humidity-driven logistic growth model for a bacterial culture.
 
-    min_temp: float = 4.0
-    min_growth: float = 10.0
+    E. coli reference range: growth is positive strictly between min_growth
+    (8C) and max_temp (50C), zero at those two boundaries, peaks at
+    opt_temp (37C), negative (death) outside them.
+    """
+
+    min_temp: float = 2.0
+    min_growth: float = 8.0
     opt_temp: float = 37.0
     max_growth: float = 45.0
-    max_temp: float = 48.0
+    max_temp: float = 50.0
     min_humidity: float = 40.0
     opt_humidity: float = 80.0
     max_growth_rate: float = 2.4
@@ -79,12 +99,12 @@ class GrowthModel:
         self._temp_points = [
             (self.min_temp - 6, -0.5),
             (self.min_temp, -0.3),
-            (self.min_growth, 0.05),
-            (20.0, 0.5),
+            (self.min_growth, 0.0),
+            ((self.min_growth + self.opt_temp) / 2, 0.55),
             (self.opt_temp, 1.0),
-            (self.max_growth, 0.0),
-            (self.max_temp, -1.0),
-            (self.max_temp + 7, -3.0),
+            (self.max_growth, 0.35),
+            (self.max_temp, 0.0),
+            (self.max_temp + 5, -1.5),
         ]
         self._humidity_points = [
             (0.0, 0.02),
@@ -102,11 +122,14 @@ class GrowthModel:
         clamped = max(0.0, min(100.0, humidity_pct))
         return _interpolate(clamped, self._humidity_points)
 
-    def growth_rate(self, temp_c: float, humidity_pct: float) -> float:
+    def growth_rate(self, temp_c: float, humidity_pct: float | None = None) -> float:
+        """humidity_pct=None means "no sensor" — neutral (no penalty), not a
+        guessed value. There is no DHT22 wired up, so this is always called
+        with no humidity_pct in practice (see _integrate_loop below)."""
         temp_eff = self.temperature_effect(temp_c)
-        humidity_eff = self.humidity_effect(humidity_pct)
         if temp_eff < 0:
             return temp_eff
+        humidity_eff = 1.0 if humidity_pct is None else self.humidity_effect(humidity_pct)
         return self.max_growth_rate * temp_eff * humidity_eff
 
     def update_population(self, current_pop, growth_rate, time_hours, max_pop=5000.0):
@@ -141,23 +164,33 @@ DEVICE_GLOB = os.getenv("DS18B20_GLOB", "/sys/bus/w1/devices/28*/w1_slave")
 DEVICE_ID = os.getenv("BIOREACTOR_DEVICE_ID", "bioreactor-pi-01")
 PORT = int(os.getenv("EDGE_PORT", "8080"))
 
-# DS18B20 measures temperature only — no DHT22 wired yet. ASSUMED_HUMIDITY_PCT
-# is used ONLY internally to drive the growth model's math (so the biomass
-# curve stays representative); it is reported to the dashboard as 0 (honest
-# "not measured"), not as a real reading.
-ASSUMED_HUMIDITY_PCT = float(os.getenv("ASSUMED_HUMIDITY", "80.0"))
+# DS18B20 handles temperature, and the DHT11 below provides the live humidity
+# reading. Nothing in the live packet is fabricated: if either sensor is
+# unavailable, the corresponding field is left missing/None rather than
+# substituted with a hardcoded value.
 # Controller setpoint the heater/fan target (°C). Informational only for now —
 # no heater/fan hardware is wired up yet, see heater_power_pct/fan_speed_pct below.
 TARGET_TEMP_C = float(os.getenv("TARGET_TEMP", "30.0"))
 
-# Time compression: 1 real second -> SIM_HOURS_PER_SECOND simulated hours, so
-# the full lag -> exponential -> stationary arc plays out in ~2-3 minutes.
-SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.05"))
+# Time compression for REAL mode: 1 real second -> SIM_HOURS_PER_SECOND
+# simulated hours. Kept deliberately slow so real mode reads like actual
+# E. coli — at room temperature the plate barely develops over the minutes
+# you'd watch (just a few colonies), and it only takes off if the culture
+# is genuinely warmed toward 37C. The dashboard's demo mode uses a much
+# faster client-side clock for the accelerated hair-dryer showcase; this is
+# the honest, realistic pace. Bump it via the env var if you want real mode
+# to move faster during a short demo.
+SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.0005"))
 TICK_S = float(os.getenv("TICK_S", "1.0"))
 
 INITIAL_BIOMASS_G_L = 0.05
 CARRYING_CAPACITY_G_L = 5.0
 FORECAST_HOURS = 0.5  # how far ahead biomass_predicted looks
+
+DHT11_GPIO = int(os.getenv("DHT11_GPIO", "18"))
+DHT11_CHIP = int(os.getenv("DHT11_CHIP", "0"))
+DHT11_MIN_INTERVAL_S = float(os.getenv("DHT11_MIN_INTERVAL_S", "2.0"))
+DHT11_CACHE_MAX_AGE_S = float(os.getenv("DHT11_CACHE_MAX_AGE_S", "10.0"))
 
 # =============================================================================
 # DS18B20 reading (proven read_temp, hardened with median smoothing)
@@ -210,6 +243,150 @@ def read_temp_smoothed():
 
 
 # =============================================================================
+# DHT11 humidity reading (live sensor input only)
+# =============================================================================
+
+_dht11_handle = None
+
+
+def _open_dht11_handle():
+    if lgpio is None:
+        return None
+    try:
+        return lgpio.gpiochip_open(DHT11_CHIP)
+    except Exception as exc:  # noqa: BLE001 - Pi-only dependency can fail at runtime
+        print(f"[WARN] DHT11 unavailable ({exc}). Humidity will be omitted.")
+        return None
+
+
+_dht11_handle = _open_dht11_handle()
+
+
+def read_dht11():
+    """Read one DHT11 sample, matching the standalone working script."""
+    if lgpio is None or _dht11_handle is None:
+        return None, "DHT11 no disponible"
+
+    try:
+        # mandar señal inicial
+        lgpio.gpio_claim_output(_dht11_handle, DHT11_GPIO)
+
+        lgpio.gpio_write(_dht11_handle, DHT11_GPIO, 0)
+        time.sleep(0.02)
+
+        lgpio.gpio_write(_dht11_handle, DHT11_GPIO, 1)
+        time.sleep(0.00003)
+
+        # cambiar a entrada
+        lgpio.gpio_claim_input(_dht11_handle, DHT11_GPIO)
+
+        # leer cambios
+        valores = []
+
+        inicio = time.time()
+
+        ultimo = lgpio.gpio_read(_dht11_handle, DHT11_GPIO)
+
+        while time.time() - inicio < 0.1:
+
+            actual = lgpio.gpio_read(_dht11_handle, DHT11_GPIO)
+
+            if actual != ultimo:
+                valores.append((actual, time.time()))
+                ultimo = actual
+
+        if len(valores) < 80:
+            return None, f"pocos pulsos: {len(valores)}"
+
+        bits = []
+
+        # extraer pulsos HIGH
+        for i in range(len(valores) - 1):
+
+            estado, t1 = valores[i]
+            siguiente, t2 = valores[i + 1]
+
+            if estado == 1:
+
+                duracion = (t2 - t1) * 1_000_000
+
+                if duracion > 40:
+                    bits.append(1)
+                else:
+                    bits.append(0)
+
+        if len(bits) < 40:
+            return None, f"solo {len(bits)} bits"
+
+        bits = bits[:40]
+
+        datos = []
+
+        for i in range(5):
+
+            byte = 0
+
+            for b in bits[i * 8:(i + 1) * 8]:
+                byte = (byte << 1) | b
+
+            datos.append(byte)
+
+        humedad = datos[0]
+        temperatura = datos[2]
+        checksum = datos[4]
+
+        calculado = sum(datos[:4]) & 0xFF
+
+        if checksum != calculado:
+            return None, f"CRC {datos}"
+
+        return {
+            "temp": temperatura,
+            "hum": humedad,
+        }, "OK"
+    except Exception as exc:  # noqa: BLE001 - sensor read failures are expected on flaky wiring
+        return None, str(exc)
+
+
+# =============================================================================
+# Camera (Pi Camera Module, CSI ribbon) — plain snapshot feed, no detection.
+# =============================================================================
+# The dashboard backend (ui/api/hardware.py::fetch_hardware_frame) does a
+# plain GET and treats the whole response body as one JPEG image — it polls
+# this endpoint itself (~5fps, see ui/api/camera.py::mjpeg_stream), so this
+# route only needs to hand back a single fresh frame per request, not run
+# its own streaming loop.
+CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
+
+picam2 = None
+try:
+    from picamera2 import Picamera2  # type: ignore[import-not-found]
+
+    picam2 = Picamera2()
+    picam2.configure(
+        picam2.create_video_configuration(main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT)})
+    )
+    picam2.start()
+    time.sleep(1.0)  # let auto-exposure/white-balance settle before first capture
+except Exception as exc:  # noqa: BLE001 — camera is optional; never take telemetry down with it
+    print(f"[WARN] Camera unavailable ({exc}). /api/camera/stream will 503.")
+    picam2 = None
+
+
+def capture_jpeg() -> bytes | None:
+    """One JPEG frame from the Pi Camera Module, or None if unavailable."""
+    if picam2 is None:
+        return None
+    stream = io.BytesIO()
+    try:
+        picam2.capture_file(stream, format="jpeg")
+    except Exception:  # noqa: BLE001 — a single bad frame shouldn't crash the loop
+        return None
+    return stream.getvalue()
+
+
+# =============================================================================
 # Growth integrator — background thread stepping the model on real temperature
 # =============================================================================
 
@@ -218,9 +395,11 @@ model = GrowthModel(min_survivors=0.001)
 _state_lock = threading.Lock()
 _state = {
     "temp_c": TARGET_TEMP_C,
+    "humidity_pct": None,
     "biomass_actual": INITIAL_BIOMASS_G_L,
     "biomass_ideal": INITIAL_BIOMASS_G_L,
     "biomass_predicted": INITIAL_BIOMASS_G_L,
+    "growth_rate_per_h": 0.0,
     "phase": "lag",
     "status": "STABLE",
     "heater_power_pct": 0.0,
@@ -240,7 +419,7 @@ def _status_from_temp(temp_c: float) -> str:
 
 
 def _integrate_loop():
-    """Step biomass forward using the real sensor temperature, forever."""
+    """Step biomass forward using the real sensor temperature and humidity."""
     last = time.time()
     prev_phase = _state["phase"]
     while True:
@@ -250,10 +429,20 @@ def _integrate_loop():
         last = now
 
         measured = read_temp_smoothed()
+        with _state_lock:
+            humidity = _state["humidity_pct"]
         sensor_ok = measured is not None
         temp_c = measured if sensor_ok else TARGET_TEMP_C
 
-        actual_rate = model.growth_rate(temp_c, ASSUMED_HUMIDITY_PCT)
+        reading, humidity_status = read_dht11()
+        if reading is not None:
+            humidity = reading["hum"]
+        with _state_lock:
+            _state["humidity_pct"] = humidity
+
+        # actual: real temperature + real humidity when the DHT11 provides it.
+        actual_rate = model.growth_rate(temp_c, humidity)
+        # ideal: best-case reference curve (optimal temp AND optimal humidity)
         ideal_rate = model.growth_rate(model.opt_temp, model.opt_humidity)
 
         with _state_lock:
@@ -276,6 +465,17 @@ def _integrate_loop():
             heater, fan = 0.0, 0.0
             phase = model.phase(actual_rate)
 
+            # Realized specific growth rate μ (1/h). For logistic growth,
+            # d(ln N)/dt = r·(1 − N/K), which peaks in exponential phase and
+            # eases to 0 at saturation — exactly what the dashboard's μ chart
+            # should show. Reporting it directly (rather than letting the
+            # frontend derive it from Δbiomass/Δwall-clock) avoids inflating
+            # it by the time-compression factor.
+            if actual_rate > 0:
+                realized_mu = actual_rate * (1.0 - actual / CARRYING_CAPACITY_G_L)
+            else:
+                realized_mu = actual_rate
+
             alert = None
             if not sensor_ok:
                 alert = "Sensor DS18B20 no disponible — usando setpoint"
@@ -291,9 +491,11 @@ def _integrate_loop():
 
             _state.update(
                 temp_c=temp_c,
+                humidity_pct=humidity,
                 biomass_actual=actual,
                 biomass_ideal=ideal,
                 biomass_predicted=predicted,
+                growth_rate_per_h=realized_mu,
                 phase=phase,
                 status=status,
                 heater_power_pct=heater,
@@ -336,9 +538,7 @@ def telemetry():
             "sensors": {
                 "temperature_c": round(s["temp_c"], 2),
                 "target_temp_c": TARGET_TEMP_C,
-                # No DHT22 wired yet — report 0 (not measured) rather than the
-                # assumed value used internally to drive the growth model.
-                "humidity_pct": 0.0,
+                    "humidity_pct": None if s["humidity_pct"] is None else round(s["humidity_pct"], 1),
             },
             "actuators": {
                 "heater_power_pct": round(s["heater_power_pct"], 0),
@@ -349,6 +549,7 @@ def telemetry():
                 "biomass_predicted_g_l": round(s["biomass_predicted"], 3),
                 "biomass_ideal_g_l": round(s["biomass_ideal"], 3),
                 "biomass_actual_g_l": round(s["biomass_actual"], 3),
+                "growth_rate_per_h": round(s["growth_rate_per_h"], 4),
             },
         },
         "camera": {
@@ -369,13 +570,25 @@ def data():
         return jsonify({"temperature": round(_state["temp_c"], 2), "unit": "Celsius"})
 
 
+@app.get("/api/camera/stream")
+def camera_stream():
+    """One fresh JPEG frame — no detection, just the raw chamber view."""
+    frame = capture_jpeg()
+    if frame is None:
+        return jsonify({"error": "camera unavailable"}), 503
+    return Response(frame, mimetype="image/jpeg")
+
+
 @app.get("/health")
 def health():
     with _state_lock:
         return jsonify({
             "status": "ok",
             "sensor_ok": _state["sensor_ok"],
+            "humidity_ok": _state["humidity_pct"] is not None,
             "device_file": DEVICE_FILE,
+            "humidity_gpio": DHT11_GPIO,
+            "camera_ok": picam2 is not None,
         })
 
 
@@ -386,6 +599,16 @@ def main():
     else:
         print(f"[OK] DS18B20 at {DEVICE_FILE}")
 
+    if _dht11_handle is None:
+        print(f"[WARN] No DHT11 humidity sensor available on GPIO{DHT11_GPIO}. Humidity will be omitted.")
+    else:
+        print(f"[OK] DHT11 humidity sensor on GPIO{DHT11_GPIO}")
+
+    if picam2 is None:
+        print("[WARN] No camera available. /api/camera/stream will return 503.")
+    else:
+        print(f"[OK] Camera streaming at {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
+
     threading.Thread(target=_integrate_loop, daemon=True).start()
 
     print(f"[OK] Edge service on http://0.0.0.0:{PORT}  "
@@ -395,3 +618,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+

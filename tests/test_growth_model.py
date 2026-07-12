@@ -15,7 +15,7 @@ def model() -> GrowthModel:
 
 
 def test_temperature_effect_continuous_across_former_boundaries(model: GrowthModel) -> None:
-    for boundary in (4, 10, 20, 37, 45, 48):
+    for boundary in (2, 8, 22.5, 37, 45, 50):
         before = model.temperature_effect(boundary - 0.001)
         at = model.temperature_effect(boundary)
         after = model.temperature_effect(boundary + 0.001)
@@ -61,6 +61,24 @@ def test_growth_rate_positive_at_optimal_conditions(model: GrowthModel) -> None:
 def test_growth_rate_negative_at_lethal_temp_regardless_of_humidity(model: GrowthModel) -> None:
     assert model.growth_rate(60, 100) < 0
     assert model.growth_rate(60, 0) < 0
+
+
+def test_growth_positive_strictly_between_8_and_50_peaking_at_37(model: GrowthModel) -> None:
+    """E. coli reference range: grows between ~8C and ~50C, optimal at 37C."""
+    assert model.growth_rate(7.9) <= 0
+    assert model.growth_rate(50.1) <= 0
+    for t in (8.5, 15, 25, 30, 37, 42, 48, 49.5):
+        assert model.growth_rate(t) > 0, f"expected growth at {t}C"
+    assert model.growth_rate(37) == pytest.approx(model.max_growth_rate, rel=1e-6)
+
+
+def test_growth_rate_without_humidity_reading_is_neutral(model: GrowthModel) -> None:
+    """No humidity sensor (humidity_pct=None) must not silently assume a
+    specific reading — it should behave exactly like optimal humidity
+    (no penalty), not like a fixed guess such as 80%."""
+    assert model.growth_rate(model.opt_temp) == pytest.approx(
+        model.growth_rate(model.opt_temp, model.opt_humidity), rel=1e-9
+    )
 
 
 def test_dry_conditions_slow_but_do_not_reverse_growth(model: GrowthModel) -> None:

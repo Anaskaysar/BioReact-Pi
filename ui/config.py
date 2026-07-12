@@ -6,9 +6,17 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional helper for local env files
+    load_dotenv = None  # type: ignore[assignment]
+
 UI_ROOT = Path(__file__).resolve().parent
 DATA_DIR = UI_ROOT / "data"
 DEMO_TELEMETRY_PATH = DATA_DIR / "demo_telemetry.json"
+
+if load_dotenv is not None:
+    load_dotenv(UI_ROOT.parent / ".env")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -41,6 +49,13 @@ class Settings:
     host: str = os.getenv("BIOREACTOR_HOST", "0.0.0.0")
     port: int = int(os.getenv("BIOREACTOR_PORT", "8000"))
     reload: bool = _env_bool("BIOREACTOR_RELOAD", True)
+
+    # AI advisor (Gemini) — optional. Unset means the "Ask AI" button in the
+    # dashboard returns a friendly "not configured" message instead of
+    # calling out to Google. Never hardcode the key here; export it in your
+    # shell or an untracked .env before starting the server.
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
     @property
     def is_hardware(self) -> bool:
