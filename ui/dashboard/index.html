@@ -27,28 +27,6 @@
   </header>
 
   <main class="dashboard">
-    <section class="panel panel--chart">
-      <h2 class="panel__title">Biomass Growth</h2>
-      <p class="panel__subtitle">Predicted vs. ideal vs. actual (g/L)</p>
-      <div class="chart-wrap">
-        <canvas id="biomass-chart"></canvas>
-      </div>
-    </section>
-
-    <section class="panel panel--viz3d">
-      <h2 class="panel__title">Growth Visualization</h2>
-      <p class="panel__subtitle">Cell count &amp; spread track live biomass — drag to orbit</p>
-      <div id="viz3d-container"></div>
-    </section>
-
-    <section class="panel panel--growthrate">
-      <h2 class="panel__title">Specific Growth Rate (μ)</h2>
-      <p class="panel__subtitle">ln-derivative of biomass_actual, 1/h — the standard microbiology growth-kinetics curve</p>
-      <div class="chart-wrap">
-        <canvas id="growth-rate-chart"></canvas>
-      </div>
-    </section>
-
     <section class="panel panel--camera">
       <h2 class="panel__title">Chamber Camera</h2>
       <div class="camera-wrap">
@@ -69,42 +47,82 @@
       </div>
     </section>
 
-    <section class="panel panel--metrics">
-      <h2 class="panel__title">Core Metrics</h2>
-      <div class="metrics-grid">
-        <article class="metric-card metric-card--temp">
-          <span class="metric-card__label">Temperature</span>
-          <span id="metric-temp" class="metric-card__value">--</span>
-          <span class="metric-card__unit">°C</span>
-        </article>
-        <article class="metric-card metric-card--humidity">
-          <span class="metric-card__label">Humidity</span>
-          <span id="metric-humidity" class="metric-card__value">--</span>
-          <span class="metric-card__unit">%</span>
-        </article>
-        <article class="metric-card metric-card--fan">
-          <span class="metric-card__label">Fan Speed</span>
-          <span id="metric-fan" class="metric-card__value">--</span>
-          <span class="metric-card__unit">%</span>
-          <div class="metric-card__bar"><div id="bar-fan" class="metric-card__bar-fill"></div></div>
-        </article>
-        <article class="metric-card metric-card--heater">
-          <span class="metric-card__label">Heater Power</span>
-          <span id="metric-heater" class="metric-card__value">--</span>
-          <span class="metric-card__unit">%</span>
-          <div class="metric-card__bar"><div id="bar-heater" class="metric-card__bar-fill"></div></div>
-        </article>
-      </div>
+    <section class="panel panel--viz3d">
+      <h2 class="panel__title">Growth Visualization</h2>
+      <p class="panel__subtitle">Cell count &amp; spread track live biomass — drag to orbit</p>
+      <div id="viz3d-container"></div>
     </section>
 
-    <section class="panel panel--advisor">
-      <h2 class="panel__title">AI Advisor</h2>
-      <p class="panel__subtitle">Gemini reads the current state (temp, phase, simulated pH) and suggests one action</p>
-      <div class="advisor-body">
-        <p id="advisor-text" class="advisor-text">Click "Ask AI" for a recommendation based on the current reactor state.</p>
-        <button id="advisor-button" class="advisor-button" type="button">Ask AI</button>
-      </div>
-    </section>
+    <!-- Chart / growth-rate / metrics / advisor size to their own content
+         instead of a fixed grid-row share, and scroll as a group if there's
+         more content than the viewport height — see .sidebar-stack in
+         style.css for why (fixed fr-based rows kept clipping content
+         invisibly every time a panel gained a feature). -->
+    <div class="sidebar-stack">
+      <section class="panel panel--chart">
+        <h2 class="panel__title">Biomass Growth</h2>
+        <p class="panel__subtitle">Predicted vs. ideal vs. actual (g/L)</p>
+        <div class="chart-wrap">
+          <canvas id="biomass-chart"></canvas>
+        </div>
+      </section>
+
+      <section class="panel panel--growthrate">
+        <h2 class="panel__title">Specific Growth Rate (μ)</h2>
+        <p class="panel__subtitle">ln-derivative of biomass_actual, 1/h — the standard microbiology growth-kinetics curve</p>
+        <div class="chart-wrap">
+          <canvas id="growth-rate-chart"></canvas>
+        </div>
+      </section>
+
+      <section class="panel panel--metrics">
+        <h2 class="panel__title">Core Metrics</h2>
+        <div class="metrics-grid">
+          <article class="metric-card metric-card--temp">
+            <span class="metric-card__label">Temperature</span>
+            <span id="metric-temp" class="metric-card__value">--</span>
+            <span class="metric-card__unit">°C</span>
+          </article>
+          <article class="metric-card metric-card--humidity">
+            <span class="metric-card__label">Humidity</span>
+            <span id="metric-humidity" class="metric-card__value">--</span>
+            <span class="metric-card__unit">%</span>
+          </article>
+          <article class="metric-card metric-card--fan">
+            <span class="metric-card__label">Fan Speed</span>
+            <span id="metric-fan" class="metric-card__value">--</span>
+            <span class="metric-card__unit">%</span>
+            <div class="metric-card__bar"><div id="bar-fan" class="metric-card__bar-fill"></div></div>
+          </article>
+          <article class="metric-card metric-card--heater">
+            <span class="metric-card__label">Heater Power</span>
+            <span id="metric-heater" class="metric-card__value">--</span>
+            <span class="metric-card__unit">%</span>
+            <div class="metric-card__bar"><div id="bar-heater" class="metric-card__bar-fill"></div></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel panel--advisor">
+        <h2 class="panel__title">AI Advisor</h2>
+        <p class="panel__subtitle">Gemini reads the current state (temp, phase, simulated pH) and suggests one action — or ask it something directly, by typing or by voice</p>
+        <div class="advisor-body">
+          <div class="advisor-answer">
+            <p id="advisor-text" class="advisor-text">Click "Ask AI" for a recommendation based on the current reactor state.</p>
+            <button id="speak-button" class="icon-button" type="button" title="Play this answer aloud (ElevenLabs)" hidden>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+            </button>
+          </div>
+          <div class="advisor-ask-row">
+            <input id="advisor-question" class="advisor-input" type="text" placeholder="Ask a question… (or use the mic)" autocomplete="off" />
+            <button id="mic-button" class="icon-button" type="button" title="Ask by voice">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+            </button>
+            <button id="advisor-button" class="advisor-button" type="button">Ask AI</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 
   <footer class="footer">

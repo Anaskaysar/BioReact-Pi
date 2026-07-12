@@ -34,6 +34,9 @@ const phStatus = $("ph-status");
 
 const advisorText = $("advisor-text");
 const advisorButton = $("advisor-button");
+const advisorQuestion = $("advisor-question");
+const micButton = $("mic-button");
+const speakButton = $("speak-button");
 
 // ── Chart.js biomass line chart ──
 
@@ -729,17 +732,27 @@ function updateDashboard(packet) {
 
 // ── AI Advisor — on-demand only, never auto-called (see main.py's comment
 // on /api/advisor/feedback for why: avoids burning API quota every second).
+// A typed or voice-transcribed question is optional — leaving the input
+// blank reproduces the original "one general recommendation" behavior
+// exactly, since the backend only branches on question when non-empty.
 
 advisorButton.addEventListener("click", async () => {
   advisorButton.disabled = true;
   advisorText.textContent = "Asking Gemini…";
   advisorText.className = "advisor-text advisor-text--loading";
+  speakButton.hidden = true;
   try {
-    const res = await fetch("/api/advisor/feedback", { method: "POST" });
+    const question = advisorQuestion.value.trim();
+    const res = await fetch("/api/advisor/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(question ? { question } : {}),
+    });
     const data = await res.json();
     if (data.advice) {
       advisorText.textContent = data.advice;
       advisorText.className = "advisor-text";
+      speakButton.hidden = false;
     } else {
       advisorText.textContent = data.error || "No response from the advisor.";
       advisorText.className = "advisor-text advisor-text--error";
@@ -749,6 +762,86 @@ advisorButton.addEventListener("click", async () => {
     advisorText.className = "advisor-text advisor-text--error";
   } finally {
     advisorButton.disabled = false;
+  }
+});
+
+// ── Voice question (mic button) — browser-native Web Speech API for
+// speech-to-text. Free, zero extra latency, no server round-trip just to
+// transcribe. (ElevenLabs is used the other direction below — reading the
+// answer aloud — since that's what it's actually built for; its own
+// speech-to-text isn't needed just to fill a text box.)
+// Not every browser supports this (notably Firefox), so the button is
+// disabled with an explanatory title rather than throwing when clicked.
+const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+if (SpeechRecognitionImpl) {
+  const recognition = new SpeechRecognitionImpl();
+  recognition.lang = "en-US";
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  let listening = false;
+
+  recognition.addEventListener("result", (event) => {
+    const transcript = event.results[0][0].transcript;
+    advisorQuestion.value = transcript;
+  });
+
+  recognition.addEventListener("end", () => {
+    listening = false;
+    micButton.classList.remove("icon-button--recording");
+  });
+
+  recognition.addEventListener("error", (event) => {
+    listening = false;
+    micButton.classList.remove("icon-button--recording");
+    console.error("Speech recognition error:", event.error);
+  });
+
+  micButton.addEventListener("click", () => {
+    if (listening) {
+      recognition.stop();
+      return;
+    }
+    listening = true;
+    micButton.classList.add("icon-button--recording");
+    advisorQuestion.value = "";
+    advisorQuestion.placeholder = "Listening…";
+    recognition.start();
+  });
+} else {
+  micButton.disabled = true;
+  micButton.title = "Voice input isn't supported in this browser — try Chrome or Edge";
+}
+
+// ── Speak button (ElevenLabs) — manual only, never auto-plays. Reads
+// whatever's currently shown in advisor-text, typed question or default
+// recommendation alike.
+let currentAudio = null;
+
+speakButton.addEventListener("click", async () => {
+  speakButton.disabled = true;
+  try {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
+    const res = await fetch("/api/advisor/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: advisorText.textContent }),
+    });
+    if (!res.ok) {
+      const message = await res.text();
+      console.error("Speech synthesis failed:", message);
+      return;
+    }
+    const blob = await res.blob();
+    currentAudio = new Audio(URL.createObjectURL(blob));
+    await currentAudio.play();
+  } catch (err) {
+    console.error("Playback failed:", err);
+  } finally {
+    speakButton.disabled = false;
   }
 });
 

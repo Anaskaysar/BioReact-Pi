@@ -6,13 +6,13 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ui.config import settings
 
-from . import advisor
+from . import advisor, db, voice
 from .camera import get_cached_real_frame, get_last_frame_jpeg, mjpeg_stream
 from .color_ph import analyze_frame
 from .telemetry import get_telemetry_packet, reset_telemetry
@@ -62,6 +62,14 @@ def _with_ph_reading(packet: Dict[str, Any]) -> Dict[str, Any]:
     return packet
 
 
+async def _persist_packet(packet: Dict[str, Any]) -> None:
+    """Fire-and-forget MongoDB insert. Scheduled as a background task (not
+    awaited inline in the telemetry loop below) so a slow or unreachable
+    Atlas cluster can never delay a single telemetry tick — same "never
+    block the demo" principle as the asyncio.to_thread calls elsewhere."""
+    await asyncio.to_thread(db.insert_packet, packet)
+
+
 @app.websocket("/ws/telemetry")
 async def telemetry_ws(websocket: WebSocket) -> None:
     global _last_packet
@@ -78,19 +86,41 @@ async def telemetry_ws(websocket: WebSocket) -> None:
             packet = _with_ph_reading(packet)
             _last_packet = packet
             await websocket.send_json(packet)
+            if db.is_configured():
+                asyncio.create_task(_persist_packet(packet))
             await asyncio.sleep(settings.poll_interval_s)
     except WebSocketDisconnect:
         pass
 
 
+@app.get("/api/history")
+async def history(limit: int = 200) -> Dict[str, Any]:
+    """Recent stored telemetry from MongoDB Atlas, newest first. Empty list
+    (not an error) if MONGODB_URI isn't set or Atlas is unreachable."""
+    docs = await asyncio.to_thread(db.get_recent, limit)
+    return {"configured": db.is_configured(), "count": len(docs), "records": docs}
+
+
 @app.post("/api/advisor/feedback")
-async def advisor_feedback() -> Dict[str, Optional[str]]:
+async def advisor_feedback(request: Request) -> Dict[str, Optional[str]]:
     """On-demand Gemini recommendation from the last known reactor state.
 
     Deliberately not called automatically on every telemetry tick (~1/s) —
     that would burn API quota constantly. The dashboard's "Ask AI" button
     calls this only when someone actually wants a recommendation.
+
+    Optional JSON body ``{"question": "..."}`` — a free-form question (typed
+    or voice-transcribed in the dashboard) to answer instead of the default
+    "give one recommendation" behavior. No body (or an empty/missing
+    "question") reproduces the exact original behavior.
     """
+    question: Optional[str] = None
+    try:
+        body = await request.json()
+        question = (body or {}).get("question") or None
+    except Exception:  # noqa: BLE001 — no body / not JSON = the original no-question call
+        question = None
+
     # _last_packet is the flat WebSocket packet shape (see
     # ui/api/telemetry.py and ui/api/hardware.py::normalize_hardware_payload)
     # — temp/phase/biomass_actual/status live at the top level, not nested.
@@ -109,8 +139,25 @@ async def advisor_feedback() -> Dict[str, Optional[str]]:
         "status": p.get("status"),
     }
 
-    result = await asyncio.to_thread(advisor.get_advice, context)
+    result = await asyncio.to_thread(advisor.get_advice, context, question)
     return {"advice": result.advice, "error": result.error}
+
+
+@app.post("/api/advisor/speak")
+async def advisor_speak(request: Request) -> Response:
+    """ElevenLabs narration of the given text (the advisor's last answer,
+    typically). Manual only — triggered by the dashboard's speaker button,
+    never auto-played, so it can't burn quota or talk over a demo unprompted.
+    """
+    body = await request.json()
+    text = (body or {}).get("text", "").strip()
+    if not text:
+        return Response(status_code=400, content=b"Missing 'text'")
+
+    audio, error = await asyncio.to_thread(voice.synthesize, text)
+    if audio is None:
+        return Response(status_code=503, content=(error or "voice unavailable").encode())
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 @app.get("/camera/stream")

@@ -49,6 +49,23 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
+    # MongoDB Atlas — optional telemetry history. Unset means db.py's calls
+    # are all no-ops (see ui/api/db.py) — the WS telemetry loop never depends
+    # on this succeeding.
+    mongodb_uri: str = os.getenv("MONGODB_URI", "")
+    mongodb_db_name: str = os.getenv("MONGODB_DB_NAME", "bioreact_pi")
+    mongodb_collection: str = os.getenv("MONGODB_COLLECTION", "telemetry")
+
+    # ElevenLabs — optional voice narration of the AI advisor's answer,
+    # triggered manually by the dashboard's speaker button (never auto-played).
+    elevenlabs_api_key: str = os.getenv("ELEVENLABS_API_KEY", "")
+    # Default voice is "Rachel", one of ElevenLabs' standard premade voices
+    # (works out of the box on any account, no custom voice setup needed).
+    elevenlabs_voice_id: str = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+    # eleven_flash_v2_5 optimizes for low latency (~75ms) — matters since this
+    # is triggered live by a person clicking a button, not pre-generated.
+    elevenlabs_model: str = os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5")
+
     @property
     def is_hardware(self) -> bool:
         return self.data_source.strip().lower() == "hardware"

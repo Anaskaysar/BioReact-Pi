@@ -20,5 +20,10 @@ pytest>=8.0.0
 # current Gemini SDK.
 google-genai>=0.3.0
 
-# Voice (uncomment when wired)
-# elevenlabs
+# Voice narration of the advisor's answer — optional; the speaker button
+# degrades to a clear error if unset (see ui/api/voice.py).
+elevenlabs>=1.5.0
+
+# Telemetry history — optional; /api/history returns an empty list and the
+# WS loop just skips persistence if unset (see ui/api/db.py).
+pymongo>=4.6.0

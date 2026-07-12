@@ -54,9 +54,8 @@ class AdviceResult:
     error: str | None
 
 
-def _build_prompt(context: dict[str, Any]) -> str:
-    return (
-        f"{_SYSTEM_CONTEXT}\n\n"
+def _build_prompt(context: dict[str, Any], question: str | None = None) -> str:
+    reactor_state = (
         "Current reactor state:\n"
         f"- Temperature: {context.get('temp_c', '?')}C "
         f"(target {context.get('target_temp_c', '?')}C)\n"
@@ -65,10 +64,24 @@ def _build_prompt(context: dict[str, Any]) -> str:
         f"- Simulated pH: {context.get('ph', '?')} ({context.get('ph_status', 'unknown')})\n"
         f"- Status: {context.get('status', 'unknown')}\n"
     )
+    if question:
+        # Free-form question (typed or voice-transcribed in the dashboard) —
+        # still grounded in the live reactor state, but answering what was
+        # actually asked instead of the default fixed recommendation.
+        return (
+            f"{_SYSTEM_CONTEXT}\n\n{reactor_state}\n"
+            f'A technician just asked: "{question}"\n\n'
+            "Answer their question directly, using the reactor state above "
+            "for context where relevant. Keep it concise (max ~60 words). "
+            "Do not use markdown formatting."
+        )
+    return f"{_SYSTEM_CONTEXT}\n\n{reactor_state}"
 
 
-def get_advice(context: dict[str, Any]) -> AdviceResult:
-    """Call Gemini with the current reactor state; return one short recommendation."""
+def get_advice(context: dict[str, Any], question: str | None = None) -> AdviceResult:
+    """Call Gemini with the current reactor state; return one short
+    recommendation, or — if ``question`` is given — a direct answer to that
+    specific question instead, still grounded in the same reactor context."""
     if genai is None:
         return AdviceResult(
             advice=None,
@@ -84,7 +97,7 @@ def get_advice(context: dict[str, Any]) -> AdviceResult:
         client = genai.Client(api_key=settings.gemini_api_key)
         response = client.models.generate_content(
             model=settings.gemini_model,
-            contents=_build_prompt(context),
+            contents=_build_prompt(context, question),
         )
         text = (response.text or "").strip()
         if not text:
