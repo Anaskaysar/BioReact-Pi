@@ -42,7 +42,20 @@ const advisorButton = $("advisor-button");
 Chart.defaults.font.family = "'IBM Plex Sans', sans-serif";
 Chart.defaults.color = "#8b8e97";
 
-const MAX_POINTS = 120;
+// Enough history for a minutes-scale real-mode window (1 point/s -> 15 min).
+const MAX_POINTS = 900;
+
+// Real growth is slow (minutes); demo is time-compressed (seconds). The
+// charts' x-axis unit switches to match so the axis reads realistically in
+// each mode. vizMode is declared further down but only read at call time.
+const TIME_UNIT = {
+  real: { label: "Time (min)", divisor: 60 },
+  demo: { label: "Time (s)", divisor: 1 },
+};
+
+function currentTimeUnit() {
+  return TIME_UNIT[typeof vizMode !== "undefined" ? vizMode : "real"];
+}
 
 const chartCanvas = $("biomass-chart");
 const chart = new Chart(chartCanvas, {
@@ -88,7 +101,7 @@ const chart = new Chart(chartCanvas, {
     scales: {
       x: {
         type: "linear",
-        title: { display: true, text: "Time (s)", color: "#8b8e97" },
+        title: { display: true, text: "Time (min)", color: "#8b8e97" },
         ticks: { color: "#8b8e97" },
         grid: { color: "rgba(255, 255, 255, 0.06)" },
       },
@@ -111,10 +124,9 @@ const chart = new Chart(chartCanvas, {
 let chartStartTime = null;
 
 function pushChartPoint(packet) {
-  const t = chartStartTime
-    ? (packet.timestamp - chartStartTime)
-    : 0;
   if (chartStartTime === null) chartStartTime = packet.timestamp;
+  // Real mode reads in minutes, demo in seconds (see TIME_UNIT).
+  const t = (packet.timestamp - chartStartTime) / currentTimeUnit().divisor;
 
   const datasets = chart.data.datasets;
   datasets[0].data.push({ x: t, y: packet.biomass_predicted });
@@ -177,7 +189,7 @@ const growthRateChart = new Chart(growthRateCanvas, {
     scales: {
       x: {
         type: "linear",
-        title: { display: true, text: "Time (s)", color: "#8b8e97" },
+        title: { display: true, text: "Time (min)", color: "#8b8e97" },
         ticks: { color: "#8b8e97" },
         grid: { color: "rgba(255, 255, 255, 0.06)" },
       },
@@ -197,56 +209,51 @@ const growthRateChart = new Chart(growthRateCanvas, {
 
 new ResizeObserver(() => growthRateChart.resize()).observe(growthRateCanvas.parentElement);
 
-let prevGrowthSample = null; // { t, biomass }
-
 function pushGrowthRatePoint(packet) {
-  const t = chartStartTime ? packet.timestamp - chartStartTime : 0;
+  // The instantaneous specific growth rate μ is reported directly by the
+  // data source (edge server / mock / demo compute — see growth_rate_per_h),
+  // so we just plot it. Deriving it here from Δbiomass/Δwall-clock instead
+  // inflated it by the time-compression factor (real biomass advances on a
+  // compressed sim-clock, not wall-clock).
+  const mu = packet.growth_rate_per_h;
+  if (typeof mu !== "number") return;
 
-  if (prevGrowthSample) {
-    const dtHours = packet._dtHoursOverride ?? (packet.timestamp - prevGrowthSample.t) / 3600;
-    if (dtHours > 0) {
-      const n1 = Math.max(prevGrowthSample.biomass, 1e-6);
-      const n2 = Math.max(packet.biomass_actual, 1e-6);
-      const mu = Math.log(n2 / n1) / dtHours;
+  const t = chartStartTime
+    ? (packet.timestamp - chartStartTime) / currentTimeUnit().divisor
+    : 0;
 
-      const data = growthRateChart.data.datasets[0].data;
-      data.push({ x: t, y: mu });
-      if (data.length > MAX_POINTS) data.shift();
+  const data = growthRateChart.data.datasets[0].data;
+  data.push({ x: t, y: mu });
+  if (data.length > MAX_POINTS) data.shift();
 
-      const ys = data.map((p) => p.y);
-      const min = Math.min(...ys, 0);
-      const max = Math.max(...ys, 0.1);
-      const pad = Math.max((max - min) * 0.15, 0.05);
-      growthRateChart.options.scales.y.min = min - pad;
-      growthRateChart.options.scales.y.max = max + pad;
+  const ys = data.map((p) => p.y);
+  const min = Math.min(...ys, 0);
+  const max = Math.max(...ys, 0.1);
+  const pad = Math.max((max - min) * 0.15, 0.05);
+  growthRateChart.options.scales.y.min = min - pad;
+  growthRateChart.options.scales.y.max = max + pad;
 
-      growthRateChart.update("none");
-    }
-  }
-
-  prevGrowthSample = { t: packet.timestamp, biomass: packet.biomass_actual };
+  growthRateChart.update("none");
 }
 
-// ── Three.js growth visualization — Petri dish top-down view ──
-// Real bacteria on solid/agar-like media don't swim in orbits — colonies
-// appear at a fixed spot and just sit there. So instead of the earlier
-// "spinning cluster" (which read as decorative, not scientific), this is a
-// static top-down dish: cells are assigned a random position ONCE (uniform
-// over the dish's circular area, so they don't cluster unrealistically at
-// the center) and simply become visible over time as biomass grows — no
-// per-frame motion. Each cell keeps the phase color it had at the moment it
-// "appeared", so the dish reads as a growth history, not a single blob.
+// ── Three.js growth visualization — Petri dish colony timelapse ──
+// Modeled on a real bacterial-colony timelapse: colonies seed at fixed
+// points scattered over the agar, then each one *expands* as a growing
+// circle over time. As biomass rises, more colonies cross their seeding
+// threshold and existing ones enlarge, until at full biomass they merge
+// into a confluent lawn — exactly the arc you see filming an E. coli plate.
 //
-// Points are rendered as tiny soft circular sprites (not chunky 3D capsules)
-// so they read as "real cells" rather than a toy asset. The dish is framed
-// with an orthographic camera sized to the panel's aspect ratio so the full
-// circle is always in view, regardless of the panel's width/height.
+// Rendered as an InstancedMesh of flat, soft-edged circle sprites (one per
+// colony) with per-instance scale + color. Per-instance scale gives each
+// colony its own growth without a custom shader (an earlier hand-written
+// ShaderMaterial corrupted the rest of the scene — see git history), and
+// overlapping soft circles blend into a lawn on their own.
+//
+// Colony size/count are driven by biomass_actual / carrying-capacity, so
+// slow real-mode growth stays sparse ("a few colonies") while accelerated
+// demo mode fills the plate fast when the sensor is heated.
 
-const PHASE_COLOR = {
-  lag: new THREE.Color(0xf0b53a),
-  exponential: new THREE.Color(0x5fe27f),
-  stationary: new THREE.Color(0x6bb6ff),
-};
+const COLONY_BASE_COLOR = new THREE.Color(0xe8dfc2); // cream, like real E. coli colonies
 
 function makeRadialTexture(inner, outer, size = 256) {
   const canvas = document.createElement("canvas");
@@ -262,27 +269,27 @@ function makeRadialTexture(inner, outer, size = 256) {
   return tex;
 }
 
-// Soft circular sprite for each cell — a plain PointsMaterial + this alpha
-// mask (built-in Three material, not a hand-written shader). An earlier
-// version used a custom ShaderMaterial for per-point grow-in easing, but it
-// corrupted the WebGL state for the *other* meshes in the scene (the agar
-// disc rendered as solid orange garbage whenever the custom-shader points
-// were also in the scene) — a real, reproduced bug, not a guess. Built-in
-// materials are what's reliable here.
-function makeDotSprite(size = 64) {
+// Soft-edged circular colony sprite: a defined core (a colony has a real
+// edge) that fades over the outer third so overlapping colonies blend into
+// a lawn instead of showing hard seams. White so the per-instance colony
+// color tints it.
+function makeColonyTexture(size = 128) {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext("2d");
   const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  // Mostly-solid core with only a thin soft edge — a soft falloff made the
-  // tiny dots read as faint smudges on the near-black agar; this keeps them
-  // crisp and clearly visible while still anti-aliasing the rim.
-  g.addColorStop(0, "rgba(255,255,255,1)");
-  g.addColorStop(0.7, "rgba(255,255,255,0.98)");
-  g.addColorStop(1, "rgba(255,255,255,0)");
+  g.addColorStop(0.0, "rgba(255,255,255,1)");
+  g.addColorStop(0.6, "rgba(255,255,255,0.92)");
+  g.addColorStop(0.85, "rgba(255,255,255,0.45)");
+  g.addColorStop(1.0, "rgba(255,255,255,0)");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   return new THREE.CanvasTexture(canvas);
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 function initViz3D() {
@@ -295,7 +302,9 @@ function initViz3D() {
   // the dish overflow the frame on tall narrow panels.
   const DISH_R = 1.3;
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
-  camera.position.set(0, 5, 0.55);
+  // Nearly straight-down (just a hair of tilt so the rim reads as a physical
+  // dish) — matches how a colony timelapse is filmed.
+  camera.position.set(0, 5, 0.15);
   camera.lookAt(0, 0, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -321,9 +330,10 @@ function initViz3D() {
   keyLight.position.set(1.2, 4, 1.5);
   scene.add(keyLight);
 
-  // Agar surface — subtle radial gradient so the dish reads as a lit
-  // physical surface instead of a flat color fill.
-  const agarTex = makeRadialTexture("#171c16", "#06070a");
+  // Agar surface — warm dark amber radial gradient so the dish reads as a
+  // real nutrient-agar plate (cream colonies pop against it) while still
+  // fitting the dashboard's dark theme.
+  const agarTex = makeRadialTexture("#2e2416", "#0a0805");
   const agar = new THREE.Mesh(
     new THREE.CircleGeometry(DISH_R, 96),
     new THREE.MeshStandardMaterial({ map: agarTex, roughness: 0.9, metalness: 0.0 })
@@ -347,54 +357,56 @@ function initViz3D() {
   rim.position.y = 0.001;
   scene.add(rim);
 
-  // ── Cells: static positions, uniform over the dish's circular area ──
-  // r = R*sqrt(random) (not r = R*random) is what makes the distribution
-  // uniform per unit AREA instead of bunching points near the center.
-  const MAX_CELLS = 700;
-  const positions = new Float32Array(MAX_CELLS * 3);
-  const colors = new Float32Array(MAX_CELLS * 3);
+  // ── Colonies: fixed seed points that expand into growing circles ──
+  const COLONY_COUNT = 150;
+  // GROW_BAND = how much of the 0..1 biomass range a colony takes to go from
+  // just-seeded to full size. Wider = more staggered/organic; too wide and
+  // colonies never reach full before biomass saturates.
+  const GROW_BAND = 0.28;
+  const COLONY_MIN_R = 0.07;   // world-units radius of a fully-grown small colony
+  const COLONY_MAX_R = 0.17;   // ...of a fully-grown large colony
 
-  // Positions are generated already in random reveal order (index 0 is the
-  // first cell that can ever appear, index MAX_CELLS-1 the last) so growth
-  // can just be "draw the first N points" — new colonies pop up scattered
-  // across the dish over time, not radiating out from the center.
-  for (let i = 0; i < MAX_CELLS; i++) {
-    const r = (DISH_R * 0.94) * Math.sqrt(Math.random());
-    const theta = Math.random() * Math.PI * 2;
-    positions[i * 3] = r * Math.cos(theta);
-    positions[i * 3 + 1] = 0.004 + Math.random() * 0.006;
-    positions[i * 3 + 2] = r * Math.sin(theta);
-    colors[i * 3] = PHASE_COLOR.lag.r;
-    colors[i * 3 + 1] = PHASE_COLOR.lag.g;
-    colors[i * 3 + 2] = PHASE_COLOR.lag.b;
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geometry.setDrawRange(0, 0);
-
-  const dotSprite = makeDotSprite();
-  // sizeAttenuation:false makes `size` a screen-pixel value (predictable),
-  // instead of world units that an orthographic camera scales by an opaque
-  // factor — that scaling rendered the colonies as barely-visible ~2px
-  // specks. gl_PointSize is in framebuffer pixels, so multiply by the
-  // renderer's pixel ratio to hit a consistent CSS-pixel size on any display.
-  const DOT_BASE_PX = 4.5;
-  const DOT_GROW_PX = 4.0;
-  const material = new THREE.PointsMaterial({
-    size: DOT_BASE_PX * pixelRatio,
-    sizeAttenuation: false,
-    map: dotSprite,
-    vertexColors: true,
+  // Flat circle sprite, baked to lie in the XZ plane (facing up at the
+  // top-down camera) so per-instance matrices only carry position + scale.
+  const colonyGeo = new THREE.PlaneGeometry(2, 2);
+  colonyGeo.rotateX(-Math.PI / 2);
+  const colonyMat = new THREE.MeshBasicMaterial({
+    map: makeColonyTexture(),
     transparent: true,
     depthWrite: false,
-    opacity: 1.0,
+    opacity: 0.96,
   });
+  const colonies = new THREE.InstancedMesh(colonyGeo, colonyMat, COLONY_COUNT);
+  colonies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  colonies.frustumCulled = false;
+  scene.add(colonies);
 
-  const points = new THREE.Points(geometry, material);
-  points.frustumCulled = false;
-  scene.add(points);
+  // Per-colony fixed properties. seedThreshold spreads across the biomass
+  // range so a few colonies appear at very low biomass (real mode's "a few
+  // colonies") and the rest bloom progressively as biomass climbs.
+  const seedThreshold = new Float32Array(COLONY_COUNT);
+  const colonyPos = [];        // {x, z}
+  const colonyMaxR = new Float32Array(COLONY_COUNT);
+  const colonyScale = new Float32Array(COLONY_COUNT); // eased current radius
+  const colonyTint = [];       // THREE.Color per colony
+  for (let i = 0; i < COLONY_COUNT; i++) {
+    const r = (DISH_R * 0.9) * Math.sqrt(Math.random()); // uniform over AREA
+    const theta = Math.random() * Math.PI * 2;
+    colonyPos.push({ x: r * Math.cos(theta), z: r * Math.sin(theta) });
+    seedThreshold[i] = ((i + Math.random() * 0.6) / COLONY_COUNT) * 0.88;
+    colonyMaxR[i] = COLONY_MIN_R + Math.random() * (COLONY_MAX_R - COLONY_MIN_R);
+    colonyScale[i] = 0;
+    colonyTint.push(
+      COLONY_BASE_COLOR.clone().offsetHSL(
+        (Math.random() - 0.5) * 0.04,
+        (Math.random() - 0.5) * 0.12,
+        (Math.random() - 0.5) * 0.14
+      )
+    );
+  }
+
+  const dummy = new THREE.Object3D();
+  const tmpColor = new THREE.Color();
 
   // Margin so the dish (plus its rim) never touches the panel edge; extra
   // margin because the slight tilt foreshortens the far edge of the circle.
@@ -421,7 +433,7 @@ function initViz3D() {
   new ResizeObserver(resize).observe(container);
   resize();
 
-  // Plate fullness must track the ABSOLUTE biomass level (fraction of full
+  // Plate coverage must track the ABSOLUTE biomass level (fraction of full
   // plate), not "biomass relative to the max biomass seen" — the latter
   // divides a monotonically-growing value by its own running max, which is
   // always ~1.0, so the plate would snap to full instantly and never show
@@ -433,55 +445,57 @@ function initViz3D() {
   // cold start (ideal still tiny) from flashing full on the first frame.
   const CAPACITY_FLOOR = 0.8;
   let maxIdealSeen = 0.05;
-  let revealedCount = 0;
-  let currentColor = PHASE_COLOR.lag.clone();
+  let targetNorm = 0;   // set from telemetry
+  let displayNorm = 0;  // eased toward targetNorm each frame for smooth growth
 
   function updateViz(packet) {
     const idealRef = packet.biomass_ideal ?? packet.biomass_actual ?? 0;
     maxIdealSeen = Math.max(maxIdealSeen, idealRef);
     const capacity = Math.max(maxIdealSeen, CAPACITY_FLOOR);
-    const norm = Math.max(0, Math.min(1, (packet.biomass_actual ?? 0) / capacity));
-    const targetColor = PHASE_COLOR[packet.phase] || PHASE_COLOR.lag;
-
-    // Colonies visibly enlarge as they mature (see any petri-dish timelapse)
-    // — approximated by ramping the whole population's dot size up as the
-    // plate nears saturation, so a full plate reads as denser/larger, not
-    // just "more of the same tiny dots".
-    material.size = (DOT_BASE_PX + norm * DOT_GROW_PX) * pixelRatio;
-
-    const nextCount = Math.round(norm * MAX_CELLS);
-    // Only ever add colonies here; the plate never shrinks mid-run (that
-    // would flicker as the capacity estimate creeps up). A mode switch
-    // clears everything through resetViz() instead.
-    if (nextCount > revealedCount) {
-      currentColor.lerp(targetColor, 0.5); // drift the "current" tint toward phase
-      for (let idx = revealedCount; idx < nextCount; idx++) {
-        colors[idx * 3] = currentColor.r;
-        colors[idx * 3 + 1] = currentColor.g;
-        colors[idx * 3 + 2] = currentColor.b;
-      }
-      geometry.attributes.color.needsUpdate = true;
-      geometry.setDrawRange(0, nextCount);
-      revealedCount = nextCount;
-    }
+    targetNorm = Math.max(0, Math.min(1, (packet.biomass_actual ?? 0) / capacity));
   }
 
   function resetViz() {
     maxIdealSeen = 0.05;
-    revealedCount = 0;
-    currentColor = PHASE_COLOR.lag.clone();
-    for (let i = 0; i < MAX_CELLS; i++) {
-      colors[i * 3] = PHASE_COLOR.lag.r;
-      colors[i * 3 + 1] = PHASE_COLOR.lag.g;
-      colors[i * 3 + 2] = PHASE_COLOR.lag.b;
+    targetNorm = 0;
+    displayNorm = 0;
+    for (let i = 0; i < COLONY_COUNT; i++) colonyScale[i] = 0;
+  }
+
+  function renderColonies() {
+    // Ease coverage toward target so growth looks continuous between the
+    // once-per-second telemetry packets, not stepped.
+    displayNorm += (targetNorm - displayNorm) * 0.05;
+
+    for (let i = 0; i < COLONY_COUNT; i++) {
+      // progress: 0 before this colony seeds, ramping to 1 as biomass climbs
+      // through its own [seedThreshold, seedThreshold+GROW_BAND] window.
+      const progress = smoothstep(
+        seedThreshold[i],
+        seedThreshold[i] + GROW_BAND,
+        displayNorm
+      );
+      const targetScale = colonyMaxR[i] * progress;
+      colonyScale[i] += (targetScale - colonyScale[i]) * 0.08;
+      const s = colonyScale[i];
+
+      dummy.position.set(colonyPos[i].x, 0.006, colonyPos[i].z);
+      dummy.scale.set(s, s, s);
+      dummy.updateMatrix();
+      colonies.setMatrixAt(i, dummy.matrix);
+
+      // Young colonies are a touch dimmer/more translucent, maturing to full.
+      const bright = 0.55 + 0.45 * progress;
+      tmpColor.copy(colonyTint[i]).multiplyScalar(bright);
+      colonies.setColorAt(i, tmpColor);
     }
-    geometry.attributes.color.needsUpdate = true;
-    geometry.setDrawRange(0, 0);
-    material.size = DOT_BASE_PX * pixelRatio;
+    colonies.instanceMatrix.needsUpdate = true;
+    if (colonies.instanceColor) colonies.instanceColor.needsUpdate = true;
   }
 
   function animate() {
     requestAnimationFrame(animate);
+    renderColonies();
     controls.update();
     renderer.render(scene, camera);
   }
@@ -580,13 +594,12 @@ function phaseFromRate(rate) {
 }
 
 // Tunable: how many simulated hours pass per real second in demo mode. The
-// edge server's real-mode pace is 0.05 (see pi_edge_server.py
-// SIM_HOURS_PER_SECOND) — this is faster for a punchy live demo, not
-// because the biology changed. Picked so that, solving the logistic curve's
-// time-to-95%-grown at this model's rates: room temperature (~1.3/h) fills
-// the plate in ~35-40s, a hair-dryer blast near the model's 37°C optimum
-// (~2.4/h) fills it in ~18-20s — slow enough to read as "growing", fast
-// enough to react visibly within a live demo.
+// edge server's real-mode pace is far slower (0.005, see pi_edge_server.py
+// SIM_HOURS_PER_SECOND) — demo is deliberately time-compressed for a punchy
+// live showcase, not because the biology changed (same formula). Picked so
+// that room temperature (~1.3/h) fills the plate in ~35-40s while a
+// hair-dryer blast toward the 37°C optimum (~2.4/h) visibly races it in
+// ~18-20s — that gap is the whole point of the demo.
 const DEMO_HOURS_PER_SECOND = 0.15;
 
 let vizMode = "real"; // "real" | "demo"
@@ -617,18 +630,17 @@ function computeEffectivePacket(packet) {
   demoBiomass = updatePopulation(demoBiomass, rate, dtHours);
   demoIdeal = updatePopulation(demoIdeal, idealRate, dtHours);
   const predicted = updatePopulation(demoBiomass, rate, 0.15);
+  // Realized μ (1/h): r·(1 − N/K), same as the edge server reports — plotted
+  // directly by the μ chart (no wall-clock derivation).
+  const realizedMu = rate > 0 ? rate * (1 - demoBiomass / CARRYING_CAPACITY) : rate;
 
   return {
     ...packet, // keep the real wall-clock timestamp — charts' x-axis stays in real demo seconds
     biomass_actual: demoBiomass,
     biomass_ideal: demoIdeal,
     biomass_predicted: predicted,
+    growth_rate_per_h: realizedMu,
     phase: phaseFromRate(rate),
-    // The growth-rate chart derives μ from Δbiomass/Δtimestamp; feeding it
-    // the real timestamp delta would make μ read in the thousands, since a
-    // sliver of real time corresponds to a much bigger biological time
-    // jump in demo mode. This tells it the *actual* simulated Δt instead.
-    _dtHoursOverride: dtHours,
   };
 }
 
@@ -637,10 +649,12 @@ const demoBadge = $("demo-badge");
 
 function resetGrowthDisplays() {
   chartStartTime = null;
-  prevGrowthSample = null;
+  const unitLabel = currentTimeUnit().label;
   for (const ds of chart.data.datasets) ds.data = [];
+  chart.options.scales.x.title.text = unitLabel;
   chart.update("none");
   growthRateChart.data.datasets[0].data = [];
+  growthRateChart.options.scales.x.title.text = unitLabel;
   growthRateChart.update("none");
   viz3d.resetViz();
 }
@@ -710,11 +724,7 @@ function updateDashboard(packet) {
     phValue.textContent = ph.toFixed(2);
     phStatus.textContent = status;
     phStatus.title = label;
-    phIndicator.classList.remove(
-      "ph-indicator--acidic",
-      "ph-indicator--optimal",
-      "ph-indicator--alkaline"
-    );
+    phIndicator.classList.remove("ph-indicator--good", "ph-indicator--bad");
     phIndicator.classList.add(`ph-indicator--${status}`);
   }
 

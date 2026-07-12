@@ -168,9 +168,15 @@ PORT = int(os.getenv("EDGE_PORT", "8080"))
 # no heater/fan hardware is wired up yet, see heater_power_pct/fan_speed_pct below.
 TARGET_TEMP_C = float(os.getenv("TARGET_TEMP", "30.0"))
 
-# Time compression: 1 real second -> SIM_HOURS_PER_SECOND simulated hours, so
-# the full lag -> exponential -> stationary arc plays out in ~2-3 minutes.
-SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.05"))
+# Time compression for REAL mode: 1 real second -> SIM_HOURS_PER_SECOND
+# simulated hours. Kept deliberately slow so real mode reads like actual
+# E. coli — at room temperature the plate barely develops over the minutes
+# you'd watch (just a few colonies), and it only takes off if the culture
+# is genuinely warmed toward 37C. The dashboard's demo mode uses a much
+# faster client-side clock for the accelerated hair-dryer showcase; this is
+# the honest, realistic pace. Bump it via the env var if you want real mode
+# to move faster during a short demo.
+SIM_HOURS_PER_SECOND = float(os.getenv("SIM_HOURS_PER_SECOND", "0.005"))
 TICK_S = float(os.getenv("TICK_S", "1.0"))
 
 INITIAL_BIOMASS_G_L = 0.05
@@ -277,6 +283,7 @@ _state = {
     "biomass_actual": INITIAL_BIOMASS_G_L,
     "biomass_ideal": INITIAL_BIOMASS_G_L,
     "biomass_predicted": INITIAL_BIOMASS_G_L,
+    "growth_rate_per_h": 0.0,
     "phase": "lag",
     "status": "STABLE",
     "heater_power_pct": 0.0,
@@ -334,6 +341,17 @@ def _integrate_loop():
             heater, fan = 0.0, 0.0
             phase = model.phase(actual_rate)
 
+            # Realized specific growth rate μ (1/h). For logistic growth,
+            # d(ln N)/dt = r·(1 − N/K), which peaks in exponential phase and
+            # eases to 0 at saturation — exactly what the dashboard's μ chart
+            # should show. Reporting it directly (rather than letting the
+            # frontend derive it from Δbiomass/Δwall-clock) avoids inflating
+            # it by the time-compression factor.
+            if actual_rate > 0:
+                realized_mu = actual_rate * (1.0 - actual / CARRYING_CAPACITY_G_L)
+            else:
+                realized_mu = actual_rate
+
             alert = None
             if not sensor_ok:
                 alert = "Sensor DS18B20 no disponible — usando setpoint"
@@ -352,6 +370,7 @@ def _integrate_loop():
                 biomass_actual=actual,
                 biomass_ideal=ideal,
                 biomass_predicted=predicted,
+                growth_rate_per_h=realized_mu,
                 phase=phase,
                 status=status,
                 heater_power_pct=heater,
@@ -407,6 +426,7 @@ def telemetry():
                 "biomass_predicted_g_l": round(s["biomass_predicted"], 3),
                 "biomass_ideal_g_l": round(s["biomass_ideal"], 3),
                 "biomass_actual_g_l": round(s["biomass_actual"], 3),
+                "growth_rate_per_h": round(s["growth_rate_per_h"], 4),
             },
         },
         "camera": {
@@ -468,3 +488,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+

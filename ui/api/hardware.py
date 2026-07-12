@@ -57,6 +57,7 @@ def normalize_hardware_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "biomass_predicted": round(float(growth.get("biomass_predicted_g_l", 0.0)), 3),
         "biomass_ideal": round(float(growth.get("biomass_ideal_g_l", 0.0)), 3),
         "biomass_actual": round(float(growth.get("biomass_actual_g_l", 0.0)), 3),
+        "growth_rate_per_h": round(float(growth.get("growth_rate_per_h", 0.0)), 4),
         "phase": growth.get("phase", "lag"),
         "status": payload.get("status", "STABLE"),
         "color_metric": {

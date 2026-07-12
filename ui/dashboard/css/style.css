@@ -438,9 +438,9 @@ header.banner {
   text-transform: capitalize;
 }
 
-.ph-indicator--acidic .ph-indicator__status { color: var(--accent-amber); }
-.ph-indicator--optimal .ph-indicator__status { color: var(--accent-green); }
-.ph-indicator--alkaline .ph-indicator__status { color: #c084fc; }
+.ph-indicator--good .ph-indicator__status { color: var(--accent-green); }
+.ph-indicator--bad .ph-indicator__status { color: var(--accent-red); }
+.ph-indicator--bad .ph-indicator__value { color: var(--accent-red); }
 
 /* ── Metric cards ── */
 

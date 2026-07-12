@@ -59,6 +59,10 @@ def _with_ph_reading(packet: Dict[str, Any]) -> Dict[str, Any]:
         "status": reading.status,
         "label": reading.label,
     }
+    # Surface a bad pH as a banner alert too (unless the packet already has a
+    # more urgent one), so it's not missed in the small camera-overlay readout.
+    if reading.status == "bad" and not packet.get("alert"):
+        packet["alert"] = reading.label
     return packet
 
 

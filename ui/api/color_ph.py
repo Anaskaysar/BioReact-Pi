@@ -8,14 +8,13 @@ at high pH. So the *color extraction* below is real image analysis of
 whatever the camera ROI is actually pointed at; only the pH *interpretation*
 of that color is simulated (there's no real dye in the flask).
 
-Reference (phenol red in standard culture media):
-  pH <= 6.8   yellow    -> acidic: organic-acid/acetate buildup or nutrient
-                            depletion (common in E. coli under
-                            oxygen-limited or glucose-excess conditions)
-  pH ~7.0-7.4 red/pink  -> optimal for E. coli
-  pH >= 7.8   magenta   -> alkaline: overfeeding, ammonia buildup from amino
-                            acid catabolism, or excess CO2 stripped by
-                            aeration
+Color -> pH mapping (phenol red in standard culture media): yellow ~ low pH,
+red/pink ~ neutral, magenta/purple ~ high pH.
+
+Status rule for THIS E. coli culture (see _status_for_ph / PH_GOOD_MAX):
+  pH <= 6.8  -> GOOD: the culture is acidifying its medium as growing E. coli
+                does (mixed-acid fermentation), which is the healthy sign here.
+  pH >  6.8  -> BAD:  out of range -> triggers a dashboard alert.
 """
 
 from __future__ import annotations
@@ -75,18 +74,22 @@ def _interpolate_hue_to_ph(hue_deg: float) -> float:
 @dataclass
 class PhReading:
     ph: float
-    status: str  # "acidic" | "optimal" | "alkaline"
+    status: str  # "good" | "bad"
     label: str
     rgb_avg: tuple[int, int, int]
     hue_deg: float
 
 
+# pH threshold for this E. coli culture: at or below 6.8 is good (the culture
+# is actively fermenting and acidifying its medium, as growing E. coli does);
+# above 6.8 is out of range and should trigger an alert.
+PH_GOOD_MAX = 6.8
+
+
 def _status_for_ph(ph: float) -> tuple[str, str]:
-    if ph <= 6.8:
-        return "acidic", "Acidic — possible nutrient depletion or acid byproduct buildup"
-    if ph >= 7.8:
-        return "alkaline", "Alkaline — possible overfeeding or excess CO2 stripping"
-    return "optimal", "Within E. coli's optimal pH range"
+    if ph <= PH_GOOD_MAX:
+        return "good", f"pH {ph:.2f} — within range for E. coli (<= {PH_GOOD_MAX})"
+    return "bad", f"pH {ph:.2f} above {PH_GOOD_MAX} — out of range for E. coli, check the culture"
 
 
 def analyze_frame(jpeg_bytes: bytes) -> PhReading | None:
