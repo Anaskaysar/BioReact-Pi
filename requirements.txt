@@ -12,7 +12,7 @@ pytest>=8.0.0
 # Edge / Pi (uncomment when hardware is wired)
 # RPi.GPIO
 # Adafruit-DHT
-# python-dotenv
+python-dotenv>=1.0.0
 
 # AI advisor — optional; the "Ask AI" button degrades to a clear
 # "not configured" message without it (see ui/api/advisor.py).

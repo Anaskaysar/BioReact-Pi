@@ -14,7 +14,7 @@ Industrial bioreactors grow bacteria for medicine, insulin, clean meat, and biof
 
 **Core capabilities:**
 
-- Real DS18B20 temperature sensor, read over 1-Wire on a Raspberry Pi (Ubuntu/Raspberry Pi OS)
+- Real DS18B20 temperature sensor and DHT11 humidity sensor, read live on a Raspberry Pi (Ubuntu/Raspberry Pi OS)
 - Live camera feed (Pi Camera Module via `picamera2`) — the dashboard's camera panel shows the real chamber view, not a placeholder
 - Logistic growth model calibrated to the E. coli reference range — grows strictly between **8°C and 50°C**, peaks at **37°C** — predicting biomass in real time from temperature alone (no assumed/guessed humidity). The exact same formula runs on the Pi and in the browser
 - A **simulated pH indicator**: real color extracted from the camera's ROI, interpreted through the same phenol-red colorimetric convention used in real cell-culture media (yellow=acidic, red/pink=optimal, magenta=alkaline)
@@ -102,7 +102,7 @@ Without it, the "Ask AI" button just shows a clear "not configured" message — 
 | Raspberry Pi (Ubuntu / Raspberry Pi OS) | Edge controller | Working |
 | DS18B20 (1-Wire digital temp sensor) | Chamber temperature | Working — see wiring below |
 | Pi Camera Module (CSI ribbon) | Chamber view + pH color detection | Working — served via `picamera2`, see below |
-| DHT22 (humidity) | Chamber humidity | **Not wired yet** — dashboard reports 0%, growth model applies no humidity term at all (not a guess) |
+| DHT11 (humidity) | Chamber humidity | Working — humidity is read live from the sensor and passed through the dashboard |
 | Heater / cooling fan | Actuation | **Not wired yet** — dashboard reports 0% power, no physical control loop yet |
 | Acrylic chamber | Enclosure | Erlenmeyer flask with culture medium |
 
@@ -226,7 +226,7 @@ BioReact-Pi/
 
 ## Known Limitations / Roadmap
 
-- **Humidity** — no DHT22 wired yet. Dashboard reports 0% (honest — not measured), and the growth model applies no humidity term at all rather than guessing a percentage.
+- **Humidity** — live DHT11 reading from the chamber. If the sensor is unavailable, the dashboard shows `--` instead of inventing a value.
 - **Actuators** — no heater/fan hardware wired yet. Dashboard reports 0% power rather than simulating a value, so nothing on screen is faked.
 - **Camera framing** — the camera shows whatever the Pi happens to be pointed at; the pH reading is only meaningful once it's aimed at the actual flask/chamber.
 - **AI advisor** — needs a `GEMINI_API_KEY` (see [above](#ai-advisor-setup-optional)); without one it just says so.

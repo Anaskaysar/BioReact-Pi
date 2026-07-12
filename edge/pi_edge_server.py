@@ -45,6 +45,11 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify
 
+try:
+    import lgpio  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional Pi-only dependency
+    lgpio = None
+
 # =============================================================================
 # Embedded growth model (standalone copy of src/models/growth_model.py)
 # =============================================================================
@@ -159,11 +164,10 @@ DEVICE_GLOB = os.getenv("DS18B20_GLOB", "/sys/bus/w1/devices/28*/w1_slave")
 DEVICE_ID = os.getenv("BIOREACTOR_DEVICE_ID", "bioreactor-pi-01")
 PORT = int(os.getenv("EDGE_PORT", "8080"))
 
-# DS18B20 measures temperature only — no DHT22 wired yet. The growth model
-# is called with humidity_pct=None (see GrowthModel.growth_rate), which
-# means "no reading" and applies no humidity penalty at all, rather than
-# guessing a specific percentage we don't actually have. Growth in real
-# mode is therefore driven by temperature alone, honestly.
+# DS18B20 handles temperature, and the DHT11 below provides the live humidity
+# reading. Nothing in the live packet is fabricated: if either sensor is
+# unavailable, the corresponding field is left missing/None rather than
+# substituted with a hardcoded value.
 # Controller setpoint the heater/fan target (°C). Informational only for now —
 # no heater/fan hardware is wired up yet, see heater_power_pct/fan_speed_pct below.
 TARGET_TEMP_C = float(os.getenv("TARGET_TEMP", "30.0"))
@@ -182,6 +186,11 @@ TICK_S = float(os.getenv("TICK_S", "1.0"))
 INITIAL_BIOMASS_G_L = 0.05
 CARRYING_CAPACITY_G_L = 5.0
 FORECAST_HOURS = 0.5  # how far ahead biomass_predicted looks
+
+DHT11_GPIO = int(os.getenv("DHT11_GPIO", "18"))
+DHT11_CHIP = int(os.getenv("DHT11_CHIP", "0"))
+DHT11_MIN_INTERVAL_S = float(os.getenv("DHT11_MIN_INTERVAL_S", "2.0"))
+DHT11_CACHE_MAX_AGE_S = float(os.getenv("DHT11_CACHE_MAX_AGE_S", "10.0"))
 
 # =============================================================================
 # DS18B20 reading (proven read_temp, hardened with median smoothing)
@@ -234,6 +243,112 @@ def read_temp_smoothed():
 
 
 # =============================================================================
+# DHT11 humidity reading (live sensor input only)
+# =============================================================================
+
+_dht11_handle = None
+
+
+def _open_dht11_handle():
+    if lgpio is None:
+        return None
+    try:
+        return lgpio.gpiochip_open(DHT11_CHIP)
+    except Exception as exc:  # noqa: BLE001 - Pi-only dependency can fail at runtime
+        print(f"[WARN] DHT11 unavailable ({exc}). Humidity will be omitted.")
+        return None
+
+
+_dht11_handle = _open_dht11_handle()
+
+
+def read_dht11():
+    """Read one DHT11 sample, matching the standalone working script."""
+    if lgpio is None or _dht11_handle is None:
+        return None, "DHT11 no disponible"
+
+    try:
+        # mandar señal inicial
+        lgpio.gpio_claim_output(_dht11_handle, DHT11_GPIO)
+
+        lgpio.gpio_write(_dht11_handle, DHT11_GPIO, 0)
+        time.sleep(0.02)
+
+        lgpio.gpio_write(_dht11_handle, DHT11_GPIO, 1)
+        time.sleep(0.00003)
+
+        # cambiar a entrada
+        lgpio.gpio_claim_input(_dht11_handle, DHT11_GPIO)
+
+        # leer cambios
+        valores = []
+
+        inicio = time.time()
+
+        ultimo = lgpio.gpio_read(_dht11_handle, DHT11_GPIO)
+
+        while time.time() - inicio < 0.1:
+
+            actual = lgpio.gpio_read(_dht11_handle, DHT11_GPIO)
+
+            if actual != ultimo:
+                valores.append((actual, time.time()))
+                ultimo = actual
+
+        if len(valores) < 80:
+            return None, f"pocos pulsos: {len(valores)}"
+
+        bits = []
+
+        # extraer pulsos HIGH
+        for i in range(len(valores) - 1):
+
+            estado, t1 = valores[i]
+            siguiente, t2 = valores[i + 1]
+
+            if estado == 1:
+
+                duracion = (t2 - t1) * 1_000_000
+
+                if duracion > 40:
+                    bits.append(1)
+                else:
+                    bits.append(0)
+
+        if len(bits) < 40:
+            return None, f"solo {len(bits)} bits"
+
+        bits = bits[:40]
+
+        datos = []
+
+        for i in range(5):
+
+            byte = 0
+
+            for b in bits[i * 8:(i + 1) * 8]:
+                byte = (byte << 1) | b
+
+            datos.append(byte)
+
+        humedad = datos[0]
+        temperatura = datos[2]
+        checksum = datos[4]
+
+        calculado = sum(datos[:4]) & 0xFF
+
+        if checksum != calculado:
+            return None, f"CRC {datos}"
+
+        return {
+            "temp": temperatura,
+            "hum": humedad,
+        }, "OK"
+    except Exception as exc:  # noqa: BLE001 - sensor read failures are expected on flaky wiring
+        return None, str(exc)
+
+
+# =============================================================================
 # Camera (Pi Camera Module, CSI ribbon) — plain snapshot feed, no detection.
 # =============================================================================
 # The dashboard backend (ui/api/hardware.py::fetch_hardware_frame) does a
@@ -280,6 +395,7 @@ model = GrowthModel(min_survivors=0.001)
 _state_lock = threading.Lock()
 _state = {
     "temp_c": TARGET_TEMP_C,
+    "humidity_pct": None,
     "biomass_actual": INITIAL_BIOMASS_G_L,
     "biomass_ideal": INITIAL_BIOMASS_G_L,
     "biomass_predicted": INITIAL_BIOMASS_G_L,
@@ -303,7 +419,7 @@ def _status_from_temp(temp_c: float) -> str:
 
 
 def _integrate_loop():
-    """Step biomass forward using the real sensor temperature, forever."""
+    """Step biomass forward using the real sensor temperature and humidity."""
     last = time.time()
     prev_phase = _state["phase"]
     while True:
@@ -313,11 +429,19 @@ def _integrate_loop():
         last = now
 
         measured = read_temp_smoothed()
+        with _state_lock:
+            humidity = _state["humidity_pct"]
         sensor_ok = measured is not None
         temp_c = measured if sensor_ok else TARGET_TEMP_C
 
-        # actual: real temperature, no humidity assumption (honest — no sensor for it)
-        actual_rate = model.growth_rate(temp_c)
+        reading, humidity_status = read_dht11()
+        if reading is not None:
+            humidity = reading["hum"]
+        with _state_lock:
+            _state["humidity_pct"] = humidity
+
+        # actual: real temperature + real humidity when the DHT11 provides it.
+        actual_rate = model.growth_rate(temp_c, humidity)
         # ideal: best-case reference curve (optimal temp AND optimal humidity)
         ideal_rate = model.growth_rate(model.opt_temp, model.opt_humidity)
 
@@ -367,6 +491,7 @@ def _integrate_loop():
 
             _state.update(
                 temp_c=temp_c,
+                humidity_pct=humidity,
                 biomass_actual=actual,
                 biomass_ideal=ideal,
                 biomass_predicted=predicted,
@@ -413,9 +538,7 @@ def telemetry():
             "sensors": {
                 "temperature_c": round(s["temp_c"], 2),
                 "target_temp_c": TARGET_TEMP_C,
-                # No DHT22 wired yet — report 0 (not measured) rather than the
-                # assumed value used internally to drive the growth model.
-                "humidity_pct": 0.0,
+                    "humidity_pct": None if s["humidity_pct"] is None else round(s["humidity_pct"], 1),
             },
             "actuators": {
                 "heater_power_pct": round(s["heater_power_pct"], 0),
@@ -462,7 +585,9 @@ def health():
         return jsonify({
             "status": "ok",
             "sensor_ok": _state["sensor_ok"],
+            "humidity_ok": _state["humidity_pct"] is not None,
             "device_file": DEVICE_FILE,
+            "humidity_gpio": DHT11_GPIO,
             "camera_ok": picam2 is not None,
         })
 
@@ -473,6 +598,11 @@ def main():
               "Serving setpoint-only data. Check wiring / w1-gpio overlay.")
     else:
         print(f"[OK] DS18B20 at {DEVICE_FILE}")
+
+    if _dht11_handle is None:
+        print(f"[WARN] No DHT11 humidity sensor available on GPIO{DHT11_GPIO}. Humidity will be omitted.")
+    else:
+        print(f"[OK] DHT11 humidity sensor on GPIO{DHT11_GPIO}")
 
     if picam2 is None:
         print("[WARN] No camera available. /api/camera/stream will return 503.")

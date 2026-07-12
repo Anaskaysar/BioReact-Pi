@@ -10,6 +10,7 @@ doesn't depend on this at all.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +68,18 @@ def _build_prompt(context: dict[str, Any]) -> str:
     )
 
 
+def _format_error(exc: Exception) -> str:
+    message = str(exc)
+    if "RESOURCE_EXHAUSTED" in message or "quota" in message.lower() or "429" in message:
+        match = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", message, re.IGNORECASE)
+        retry_note = f" Retry in {match.group(1)}s." if match else ""
+        return (
+            "Gemini quota exhausted for this project/model. "
+            "Enable billing or try again later." + retry_note
+        )
+    return f"Gemini request failed: {exc}"
+
+
 def get_advice(context: dict[str, Any]) -> AdviceResult:
     """Call Gemini with the current reactor state; return one short recommendation."""
     if genai is None:
@@ -91,4 +104,4 @@ def get_advice(context: dict[str, Any]) -> AdviceResult:
             return AdviceResult(advice=None, error="Gemini returned an empty response.")
         return AdviceResult(advice=text, error=None)
     except Exception as exc:  # noqa: BLE001 — surface any API/network error to the UI
-        return AdviceResult(advice=None, error=f"Gemini request failed: {exc}")
+        return AdviceResult(advice=None, error=_format_error(exc))

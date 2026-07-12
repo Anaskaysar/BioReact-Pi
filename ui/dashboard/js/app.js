@@ -691,8 +691,8 @@ function interpolate(x, points) {
 
 // humidityPct omitted/null means "no sensor" -> neutral (no penalty),
 // mirroring GrowthModel.growth_rate(temp_c, humidity_pct=None) in Python.
-// We only have a temperature sensor, so demo mode's "actual" curve never
-// passes a humidity value — no assumed/hardcoded percentage.
+// If the hardware packet doesn't include a sensor value, we do not invent
+// one here; we simply keep the humidity term neutral in the formula.
 function growthRate(tempC, humidityPct = null) {
   const tempEff = interpolate(tempC, TEMP_POINTS);
   if (tempEff < 0) return tempEff;
@@ -721,18 +721,20 @@ function phaseFromRate(rate) {
 }
 
 // Demo mode is a deliberately time-compressed showcase (the edge server's
-// real-mode pace is ~1000x slower, see pi_edge_server.py). It's built to
-// stay near-frozen at room temperature and visibly bloom once the sensor is
+// real-mode pace is much slower, see pi_edge_server.py). It's built to stay
+// near-frozen at room temperature and visibly bloom once the sensor is
 // warmed with a hair dryer:
 //   DEMO_HOURS_PER_SECOND  — base compression once the culture IS growing.
 //   DEMO_BOOST_LO/HI       — a temperature gate multiplying the demo growth
 //                            rate: ~0 below LO (nothing happens at room temp),
-//                            ramping to full by HI. Centered so growth "takes
-//                            off" as temperature climbs past ~30°C toward 37°C.
-// This gate is demo-only theatre; real mode uses the pure formula unchanged.
-const DEMO_HOURS_PER_SECOND = 0.28;
-const DEMO_BOOST_LO = 28.0;
+//                            ramping up fast as the sensor rises above 30°C.
+//   DEMO_RATE_MULTIPLIER   — extra demo-only amplification so the plate
+//                            fills quickly on camera.
+// This gate/scale is demo-only theatre; real mode uses the pure formula unchanged.
+const DEMO_HOURS_PER_SECOND = 0.4;
+const DEMO_BOOST_LO = 30.0;
 const DEMO_BOOST_HI = 38.0;
+const DEMO_RATE_MULTIPLIER = 5.0;
 
 let vizMode = "real"; // "real" | "demo"
 let demoBiomass = 0.05;
@@ -754,12 +756,12 @@ function computeEffectivePacket(packet) {
   const dtHours = Math.max(0, packet.timestamp - demoLastRealTimestamp) * DEMO_HOURS_PER_SECOND;
   demoLastRealTimestamp = packet.timestamp;
 
-  // actual: real temperature reading, no humidity assumption — we only have
-  // a temperature sensor. The demo-only temperature gate keeps the plate
-  // near-frozen at room temp and makes it bloom as the sensor is heated
-  // toward 37°C (see DEMO_BOOST_LO/HI).
+  // actual: real temperature + live humidity reading when present. The
+  // demo-only temperature gate keeps the plate near-frozen at room temp and
+  // boosts growth aggressively once the sensor is heated above 30°C so the
+  // viewer fills quickly during the hair-dryer demo.
   const tempBoost = smoothstep(DEMO_BOOST_LO, DEMO_BOOST_HI, packet.temp);
-  const rate = growthRate(packet.temp) * tempBoost;
+  const rate = growthRate(packet.temp, packet.humidity ?? null) * tempBoost * DEMO_RATE_MULTIPLIER;
   // ideal: best-case reference curve (optimal temp AND optimal humidity)
   const idealRate = growthRate(OPT_TEMP, OPT_HUMIDITY);
   demoBiomass = updatePopulation(demoBiomass, rate, dtHours);
@@ -828,7 +830,9 @@ function updateDashboard(packet) {
   // letting a frozen or zeroed reading look like a live one.
   const connected = packet.hardware_connected !== false;
   metricTemp.textContent = connected ? packet.temp.toFixed(1) : "--";
-  metricHumidity.textContent = connected ? packet.humidity.toFixed(1) : "--";
+  metricHumidity.textContent = connected && typeof packet.humidity === "number"
+    ? packet.humidity.toFixed(1)
+    : "--";
   metricFan.textContent = connected ? Math.round(packet.fan_speed) : "--";
   metricHeater.textContent = connected ? Math.round(packet.heater_power) : "--";
   barFan.style.width = `${connected ? packet.fan_speed : 0}%`;

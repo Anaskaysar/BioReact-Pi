@@ -6,9 +6,17 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional helper for local env files
+    load_dotenv = None  # type: ignore[assignment]
+
 UI_ROOT = Path(__file__).resolve().parent
 DATA_DIR = UI_ROOT / "data"
 DEMO_TELEMETRY_PATH = DATA_DIR / "demo_telemetry.json"
+
+if load_dotenv is not None:
+    load_dotenv(UI_ROOT.parent / ".env")
 
 
 def _env_bool(name: str, default: bool) -> bool:

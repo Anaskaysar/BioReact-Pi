@@ -49,9 +49,12 @@ def normalize_hardware_payload(payload: dict[str, Any]) -> dict[str, Any]:
     alerts = payload.get("alerts") or []
     alert_msg = alerts[-1]["message"] if alerts else None
 
+    humidity_raw = sensors.get("humidity_pct")
+    humidity = None if humidity_raw is None else round(float(humidity_raw), 1)
+
     return {
         "temp": round(float(sensors.get("temperature_c", 0.0)), 1),
-        "humidity": round(float(sensors.get("humidity_pct", 0.0)), 1),
+        "humidity": humidity,
         "fan_speed": round(float(actuators.get("fan_speed_pct", 0.0)), 0),
         "heater_power": round(float(actuators.get("heater_power_pct", 0.0)), 0),
         "biomass_predicted": round(float(growth.get("biomass_predicted_g_l", 0.0)), 3),
@@ -79,7 +82,7 @@ def _disconnected_packet(error: str) -> dict[str, Any]:
     live data."""
     return {
         "temp": 0.0,
-        "humidity": 0.0,
+        "humidity": None,
         "fan_speed": 0.0,
         "heater_power": 0.0,
         "biomass_predicted": 0.0,

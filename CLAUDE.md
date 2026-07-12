@@ -318,7 +318,7 @@ This decoupling is what lets the camera be tall on the left without stretching t
 - [x] Colony-timelapse growth render, temperature + pH time-series graphs, minutes/seconds time axes, correct μ chart, slow real / gated-fast demo growth, two-region layout — **RESOLVED**, see §5.11.
 - [x] pH good/bad rule for E. coli (≤ 6.8 good, > 6.8 bad + alert) — **RESOLVED**, see §5.11.
 - [ ] Integrate physical actuators (heater/fan) — pending. Until then, `heater_power_pct`/`fan_speed_pct` report 0 (not simulated), so nothing on screen is faked.
-- [ ] Integrate a humidity sensor (DHT22) — pending. Until then, `humidity_pct` reports 0 on the dashboard, and the growth model applies no humidity term at all (neutral, not a guessed percentage — see §5.9).
+- [x] Integrate a humidity sensor (DHT11) — resolved. Humidity now comes from the live sensor, is passed through the telemetry packet, and is used as a factor in the growth model.
 - [ ] Point the camera at the actual flask/chamber — it currently shows whatever the Pi happens to be aimed at, which affects the pH reading's meaningfulness.
 - [ ] Set `GEMINI_API_KEY` to actually get AI advisor responses (currently returns a "not configured" message without it).
 - [ ] Document the sensor ID (`28-000000870030`) if it's ever replaced — the ID changes per physical sensor. Note: the GPIO pin is configured in `/boot/firmware/config.txt`, not in the Python script — the script only uses the `28-...` ID, which doesn't change when the pin does.
