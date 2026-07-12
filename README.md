@@ -158,6 +158,18 @@ sudo nmcli connection up "Wired connection 1"
 
 Then SSH in with `ssh user@169.254.243.2` (or PuTTY on Windows), and point `BIOREACTOR_HARDWARE_URL` at that same IP.
 
+### Pi monitor kiosk mode
+
+If the dashboard server runs on the laptop and you want the Pi's small monitor to show the same UI, open the laptop-hosted dashboard in kiosk mode on the Pi:
+
+```bash
+cd ~/Desktop/BioReact-Pi
+chmod +x scripts/pi_kiosk_dashboard.sh
+./scripts/pi_kiosk_dashboard.sh http://169.254.243.1:8000
+```
+
+That opens the laptop's dashboard on the Pi monitor full-screen, while the laptop can still show `http://localhost:8000`.
+
 ## Architecture
 
 ```
