@@ -4,12 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BioReact-Pi Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- No CDN dependencies (Google Fonts, jsdelivr) — the dashboard is meant
+       to run over an isolated Pi<->laptop link with no internet route, and
+       CDN <script> tags failing DNS there used to take the whole app down
+       (an ES module import failure blocks the entire importing script).
+       Chart.js/Three.js are vendored locally in ui/dashboard/vendor/; the
+       font falls back to system sans-serif/monospace (see style.css) since
+       self-hosting the actual font files wasn't worth the size for this. -->
   <link rel="stylesheet" href="/css/style.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="/vendor/chart.umd.min.js"></script>
+  <script src="/vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
   <header id="status-banner" class="banner banner--stable">
@@ -136,8 +140,8 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        "three": "/vendor/three/three.module.js",
+        "three/addons/": "/vendor/three/addons/"
       }
     }
   </script>

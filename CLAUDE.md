@@ -288,6 +288,18 @@ A round of "make it look and behave like a real experiment" changes.
 
 This decoupling is what lets the camera be tall on the left without stretching the graphs on the right (a single shared grid couldn't do both).
 
+### 5.12 Pi kiosk screen showing UI but no live data — CDN dependency on a no-internet link
+
+Once the DHT11 humidity sensor was wired in and the dashboard was pointed at the Pi's own attached monitor (`scripts/pi_kiosk_dashboard.sh`, Chromium `--kiosk`), a new symptom appeared: the dashboard **shell** (banner, panels, static layout) rendered fine on the Pi's screen, but no live sensor data ever populated — temperature, charts, camera, WebSocket status all stayed at their placeholder `--`/"Disconnected" state, even though the exact same URL loaded correctly with live data on the laptop's browser.
+
+**Ruled out first** (each via direct testing, not assumption): Windows Firewall (existing rule was already correct), stale Chromium cache (`--incognito` + fresh `--disk-cache-dir` didn't fix it), GPU/Wayland rendering instability (`--disable-gpu` flags didn't fix it either, though kept as harmless hardening — see the script's own comments for exactly why `--disable-software-rasterizer` must NOT be added alongside `--disable-gpu`), and the backend/WebSocket path itself — a raw `curl` handshake run directly from the Pi's own shell (`scripts/pi_test_websocket.sh`) got a real `HTTP/1.1 101 Switching Protocols` with live streaming telemetry JSON, proving the network and server were never the problem.
+
+**Root cause, found via Chromium DevTools console on the Pi:** `net::ERR_NAME_NOT_RESOLVED` for `cdn.jsdelivr.net` and `fonts.googleapis.com`. The dashboard's `index.html` loaded Three.js, Chart.js, the date-fns adapter, and Google Fonts from public CDNs. The Pi↔laptop link is a **direct Ethernet connection with a link-local IP** (`169.254.x.x/16`, no gateway, no DNS, no route to the internet) — the laptop itself has separate WiFi internet access, so this was invisible when testing from the laptop's own browser. Since `app.js` is a `<script type="module">` that does `import * as THREE from "three"`, and an ES module import failure blocks the **entire importing script** from executing (not just the failed import), one blocked CDN request silently killed all of `app.js` — explaining why the static HTML/CSS rendered but zero dynamic behavior (WebSocket connect, chart init, camera polling) ever ran, with no visible error on the page itself.
+
+**Fix:** vendored every CDN dependency locally under `ui/dashboard/vendor/` (Three.js r0.160.0 + `OrbitControls.js`, Chart.js 4.4.1 UMD, `chartjs-adapter-date-fns` bundle), pointed `index.html`'s `<script>` tags and `<script type="importmap">` at those local `/vendor/...` paths, and dropped the Google Fonts `<link>` tags entirely (safe — `style.css`'s `--font-sans`/`--font-mono` already had system-font fallback chains, so this degrades gracefully with no code change). All of it is served by the dashboard's own already-running backend, so the Pi's browser never needs to leave the link-local network. Verified with a Playwright test that blocks every request to a hostname other than `localhost`/`127.0.0.1` (precisely reproducing the Pi's no-internet condition): zero blocked requests attempted, zero JS errors, WebSocket connects with real data, and the DOM updates correctly — then confirmed working on the real Pi kiosk screen.
+
+**Takeaway if this class of bug resurfaces:** any new CDN `<script>`/`<link>` added to `ui/dashboard/index.html` will silently break the Pi's kiosk display the same way, since that display has no internet route by design. New third-party JS/CSS dependencies must be vendored into `ui/dashboard/vendor/` rather than linked from a CDN.
+
 ---
 
 ## 6. Connecting to the Raspberry Pi (quick reference)
@@ -317,6 +329,7 @@ This decoupling is what lets the camera be tall on the left without stretching t
 - [x] Simulated pH indicator (real camera color, phenol-red interpretation) + Gemini AI advisor — **RESOLVED**, see §5.10.
 - [x] Colony-timelapse growth render, temperature + pH time-series graphs, minutes/seconds time axes, correct μ chart, slow real / gated-fast demo growth, two-region layout — **RESOLVED**, see §5.11.
 - [x] pH good/bad rule for E. coli (≤ 6.8 good, > 6.8 bad + alert) — **RESOLVED**, see §5.11.
+- [x] Pi's own kiosk monitor showing the dashboard shell but no live sensor data — **RESOLVED**: root cause was CDN dependencies (Three.js/Chart.js/Fonts) unreachable over the Pi's no-internet link-local Ethernet connection, which silently broke all of `app.js` (ES module import failure blocks the whole script). Fixed by vendoring everything locally under `ui/dashboard/vendor/`, see §5.12.
 - [ ] Integrate physical actuators (heater/fan) — pending. Until then, `heater_power_pct`/`fan_speed_pct` report 0 (not simulated), so nothing on screen is faked.
 - [x] Integrate a humidity sensor (DHT11) — resolved. Humidity now comes from the live sensor, is passed through the telemetry packet, and is used as a factor in the growth model.
 - [ ] Point the camera at the actual flask/chamber — it currently shows whatever the Pi happens to be aimed at, which affects the pH reading's meaningfulness.
