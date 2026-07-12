@@ -21,38 +21,39 @@ try:
 except ImportError:
     genai = None  # type: ignore[assignment]
 
-# Fine-tuning context: this is an E. coli batch culture. Values here are the
-# same reference points src/models/growth_model.py's GrowthModel is built
-# from (opt_temp=37, growth range ~10-45C, death outside 4-48C, max growth
-# rate ~2.4/h for a well-aerated rich medium) plus the phenol-red pH
-# convention used by color_ph.py, so the advice Gemini gives is grounded in
-# the exact same numbers driving the rest of the dashboard.
-_SYSTEM_CONTEXT = """You are a bioprocess engineer assistant embedded in a live dashboard \
-controlling a bench-scale E. coli batch bioreactor (BioReact-Pi).
-
-Reference parameters for this culture (E. coli, logistic growth model):
-- Optimal temperature: 37C. Growth range ~10-45C; rapid die-off below 4C or above 48C.
-- Max specific growth rate in this model: ~2.4 /h (typical for E. coli in a \
-well-aerated rich medium).
-- Growth phases: lag -> exponential -> stationary -> declining -> death.
-- pH is read via a simulated phenol red colorimetric indicator in the medium: \
-yellow/low pH (<=6.8) means acidic -- usually organic-acid or acetate buildup \
-from oxygen-limited or glucose-excess fermentation, or nutrient depletion. \
-Red/pink (~7.0-7.4) is optimal. Magenta/purple (>=7.8) means alkaline -- \
-usually overfeeding, ammonia buildup from amino-acid catabolism, or excess \
-CO2 stripped by aeration.
-
-Given the current reactor state, respond with ONE short, concrete, actionable \
-recommendation (max 40 words) a technician should do right now -- be specific \
-(e.g. "Lower setpoint to 35C" not "adjust temperature"). If everything is \
-within range, say so briefly and confirm no action is needed. Do not use \
-markdown formatting."""
+# Kept deliberately short — the free tier caps input tokens per minute
+# (GenerateContentInputTokensPerModelPerMinute), so a long system prompt eats
+# into that budget every call. The essentials: E. coli optimum 37C, and the
+# phenol-red pH convention color_ph.py uses (<=6.8 acidic, ~7 ideal, >=7.8
+# alkaline). Optimum 37C matches src/models/growth_model.py.
+_SYSTEM_CONTEXT = (
+    "You advise a technician running a bench-scale E. coli bioreactor. "
+    "Optimum 37C (viable 8-50C). pH via phenol red: <=6.8 acidic, ~7 ideal, "
+    ">=7.8 alkaline. Reply with ONE concrete action (max 25 words, no "
+    "markdown). If everything is in range, say so and that no action is needed."
+)
 
 
 @dataclass
 class AdviceResult:
     advice: str | None
     error: str | None
+
+
+# Free-tier Gemini quota is per-model — and some models are granted a limit of
+# LITERALLY ZERO on this key (e.g. gemini-2.0-flash / -flash-lite always 429
+# with "limit: 0", regardless of usage). So we only list models verified to
+# actually return on this key, and try the configured one first, then fall
+# through the rest on a quota/not-found error. Each model has its own separate
+# budget, so one running dry doesn't sink the others. Re-verify this list if
+# the key changes — grants differ per key. (2.0-flash deliberately excluded:
+# not granted here.)
+_FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-flash-latest",
+]
 
 
 def _build_prompt(context: dict[str, Any]) -> str:
@@ -74,10 +75,32 @@ def _format_error(exc: Exception) -> str:
         match = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", message, re.IGNORECASE)
         retry_note = f" Retry in {match.group(1)}s." if match else ""
         return (
-            "Gemini quota exhausted for this project/model. "
+            "Gemini quota exhausted on every fallback model. "
             "Enable billing or try again later." + retry_note
         )
     return f"Gemini request failed: {exc}"
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    """True for errors where trying a *different* model might succeed: quota
+    exhaustion (429) or the model id being unavailable (404). A bad key,
+    malformed request, etc. are NOT retryable — those fail the same way on
+    every model, so we surface them immediately instead of looping."""
+    message = str(exc)
+    if "quota" in message.lower():
+        return True
+    return any(tok in message for tok in ("RESOURCE_EXHAUSTED", "429", "404", "NOT_FOUND"))
+
+
+def _candidate_models() -> list[str]:
+    """Configured model first, then the fallback chain — deduped, order kept."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for model in [settings.gemini_model, *_FALLBACK_MODELS]:
+        if model and model not in seen:
+            seen.add(model)
+            ordered.append(model)
+    return ordered
 
 
 def get_advice(context: dict[str, Any]) -> AdviceResult:
@@ -93,15 +116,22 @@ def get_advice(context: dict[str, Any]) -> AdviceResult:
             error="GEMINI_API_KEY isn't set. Export it before starting the dashboard.",
         )
 
-    try:
-        client = genai.Client(api_key=settings.gemini_api_key)
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=_build_prompt(context),
-        )
-        text = (response.text or "").strip()
-        if not text:
-            return AdviceResult(advice=None, error="Gemini returned an empty response.")
-        return AdviceResult(advice=text, error=None)
-    except Exception as exc:  # noqa: BLE001 — surface any API/network error to the UI
-        return AdviceResult(advice=None, error=_format_error(exc))
+    client = genai.Client(api_key=settings.gemini_api_key)
+    prompt = _build_prompt(context)
+    last_error = "No Gemini model available."
+
+    for model in _candidate_models():
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            text = (response.text or "").strip()
+            if text:
+                return AdviceResult(advice=text, error=None)
+            last_error = "Gemini returned an empty response."
+            # Empty is odd but not model-specific; try the next one anyway.
+        except Exception as exc:  # noqa: BLE001 — surface any API/network error to the UI
+            last_error = _format_error(exc)
+            if _is_retryable_model_error(exc):
+                continue  # quota/unavailable — the next model may work
+            return AdviceResult(advice=None, error=last_error)  # e.g. bad key
+
+    return AdviceResult(advice=None, error=last_error)

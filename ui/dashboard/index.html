@@ -126,7 +126,10 @@
         <p class="panel__subtitle">Gemini reads the current state (temp, phase, simulated pH) and suggests one action</p>
         <div class="advisor-body">
           <p id="advisor-text" class="advisor-text">Click "Ask AI" for a recommendation based on the current reactor state.</p>
-          <button id="advisor-button" class="advisor-button" type="button">Ask AI</button>
+          <div class="advisor-actions">
+            <button id="advisor-button" class="advisor-button" type="button">Ask AI</button>
+            <button id="advisor-replay" class="advisor-button advisor-button--replay" type="button" hidden>🔊 Replay</button>
+          </div>
         </div>
       </section>
     </div>

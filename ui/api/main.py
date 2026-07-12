@@ -6,13 +6,13 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, StreamingResponse
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ui.config import settings
 
-from . import advisor
+from . import advisor, voice
 from .camera import get_cached_real_frame, get_last_frame_jpeg, mjpeg_stream
 from .color_ph import analyze_frame
 from .telemetry import get_telemetry_packet, reset_telemetry
@@ -88,7 +88,7 @@ async def telemetry_ws(websocket: WebSocket) -> None:
 
 
 @app.post("/api/advisor/feedback")
-async def advisor_feedback() -> Dict[str, Optional[str]]:
+async def advisor_feedback() -> Dict[str, Any]:
     """On-demand Gemini recommendation from the last known reactor state.
 
     Deliberately not called automatically on every telemetry tick (~1/s) —
@@ -114,7 +114,33 @@ async def advisor_feedback() -> Dict[str, Optional[str]]:
     }
 
     result = await asyncio.to_thread(advisor.get_advice, context)
-    return {"advice": result.advice, "error": result.error}
+    # voice_available lets the frontend skip the /voice round-trip entirely
+    # when ElevenLabs isn't configured, rather than probing and getting a 503.
+    return {
+        "advice": result.advice,
+        "error": result.error,
+        "voice_available": bool(settings.elevenlabs_api_key),
+    }
+
+
+@app.post("/api/advisor/voice")
+async def advisor_voice(payload: Dict[str, Any] = Body(...)) -> Response:
+    """Synthesize the given advice text to speech (ElevenLabs) and return MP3.
+
+    Stateless on purpose — the frontend passes back the advice text it just
+    received from /api/advisor/feedback, so there's no shared server state to
+    race. Voice is a pure enhancement: any failure returns a JSON error the
+    frontend logs and ignores, leaving the on-screen text advice untouched.
+    """
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return JSONResponse({"error": "No text to speak."}, status_code=400)
+    result = await asyncio.to_thread(voice.synthesize, text)
+    if result.audio is None:
+        return JSONResponse(
+            {"error": result.error or "Voice synthesis failed."}, status_code=503
+        )
+    return Response(content=result.audio, media_type="audio/mpeg")
 
 
 @app.get("/camera/stream")

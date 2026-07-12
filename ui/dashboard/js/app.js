@@ -34,6 +34,7 @@ const phStatus = $("ph-status");
 
 const advisorText = $("advisor-text");
 const advisorButton = $("advisor-button");
+const advisorReplay = $("advisor-replay");
 
 // ── Chart.js biomass line chart ──
 
@@ -879,9 +880,70 @@ function updateDashboard(packet) {
 
 // ── AI Advisor — on-demand only, never auto-called (see main.py's comment
 // on /api/advisor/feedback for why: avoids burning API quota every second).
+// When ElevenLabs is configured, Gemini's advice is also spoken aloud via
+// /api/advisor/voice. Voice is a pure enhancement: text shows first and the
+// audio follows, so a TTS failure never blocks the on-screen recommendation.
+
+let advisorAudio = null; // currently-playing/last Audio element
+let advisorAudioUrl = null; // object URL for the last clip (for Replay)
+
+function stopAdvisorAudio() {
+  if (advisorAudio) {
+    advisorAudio.pause();
+    advisorAudio.currentTime = 0;
+  }
+}
+
+function releaseAdvisorAudio() {
+  stopAdvisorAudio();
+  if (advisorAudioUrl) {
+    URL.revokeObjectURL(advisorAudioUrl);
+    advisorAudioUrl = null;
+  }
+  advisorAudio = null;
+}
+
+function markSpeaking(on) {
+  advisorReplay.classList.toggle("is-speaking", on);
+}
+
+// Speak the given advice via ElevenLabs. Reveals the Replay button on
+// success. Any failure is logged and swallowed — the text advice stands
+// on its own. The initial call is user-gesture-initiated (the Ask AI /
+// Replay click) so browser autoplay policy lets the audio play.
+async function speakAdvice(text) {
+  try {
+    const res = await fetch("/api/advisor/voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const info = await res.json().catch(() => ({}));
+      console.warn("Advisor voice unavailable:", info.error || res.status);
+      return;
+    }
+    releaseAdvisorAudio();
+    const blob = await res.blob();
+    advisorAudioUrl = URL.createObjectURL(blob);
+    advisorAudio = new Audio(advisorAudioUrl);
+    advisorAudio.addEventListener("play", () => markSpeaking(true));
+    advisorAudio.addEventListener("pause", () => markSpeaking(false));
+    advisorAudio.addEventListener("ended", () => markSpeaking(false));
+    advisorReplay.hidden = false;
+    await advisorAudio.play().catch((e) => {
+      markSpeaking(false);
+      console.warn("Advisor audio autoplay blocked:", e.message);
+    });
+  } catch (err) {
+    console.warn("Advisor voice request failed:", err.message);
+  }
+}
 
 advisorButton.addEventListener("click", async () => {
   advisorButton.disabled = true;
+  advisorReplay.hidden = true;
+  releaseAdvisorAudio();
   advisorText.textContent = "Asking Gemini…";
   advisorText.className = "advisor-text advisor-text--loading";
   try {
@@ -890,6 +952,8 @@ advisorButton.addEventListener("click", async () => {
     if (data.advice) {
       advisorText.textContent = data.advice;
       advisorText.className = "advisor-text";
+      // Fire-and-forget: don't await, so text is readable while TTS loads.
+      if (data.voice_available) speakAdvice(data.advice);
     } else {
       advisorText.textContent = data.error || "No response from the advisor.";
       advisorText.className = "advisor-text advisor-text--error";
@@ -900,6 +964,15 @@ advisorButton.addEventListener("click", async () => {
   } finally {
     advisorButton.disabled = false;
   }
+});
+
+advisorReplay.addEventListener("click", () => {
+  if (!advisorAudio) return;
+  stopAdvisorAudio();
+  advisorAudio.play().catch((e) => {
+    markSpeaking(false);
+    console.warn("Advisor audio replay failed:", e.message);
+  });
 });
 
 // ── WebSocket connection with auto-reconnect ──

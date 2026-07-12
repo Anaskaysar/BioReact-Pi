@@ -18,7 +18,7 @@ Industrial bioreactors grow bacteria for medicine, insulin, clean meat, and biof
 - Live camera feed (Pi Camera Module via `picamera2`) — the dashboard's camera panel shows the real chamber view, not a placeholder
 - Logistic growth model calibrated to the E. coli reference range — grows strictly between **8°C and 50°C**, peaks at **37°C** — predicting biomass in real time from temperature alone (no assumed/guessed humidity). The exact same formula runs on the Pi and in the browser
 - A **simulated pH indicator**: real color extracted from the camera's ROI, interpreted through the same phenol-red colorimetric convention used in real cell-culture media (yellow=acidic, red/pink=optimal, magenta=alkaline)
-- An on-demand **AI advisor** (Gemini) — reads the current temperature/phase/biomass/pH and gives one concrete recommendation
+- An on-demand **AI advisor** (Gemini) — reads the current temperature/phase/biomass/pH and gives one concrete recommendation, **read aloud** via ElevenLabs text-to-speech (optional; degrades to text-only without a key)
 - Live web dashboard: biomass curve, specific growth-rate (μ) chart, animated petri-dish colony visualization, chamber camera panel, core metrics
 - **Real mode vs. Demo mode** — real mode shows true instrument-paced growth from the actual sensor; demo mode runs the *same* biology formula on a fast-forwarded clock so a hair dryer on the sensor visibly races the plate to full coverage within seconds, for live demos
 - Mock or hardware data sources, switchable via environment variables — the dashboard looks and behaves identically either way
@@ -72,7 +72,7 @@ Open **http://localhost:8000** — the same dashboard now reflects the real sens
 | **Biomass growth** | Predicted / ideal / actual biomass (g/L) over time |
 | **Specific growth rate (μ)** | ln-derivative of biomass — the standard microbiology way to read growth kinetics; peaks in exponential phase, flattens at stationary |
 | **Core metrics** | Temperature, humidity, fan speed, heater power — shown as `--` instead of a number whenever the Pi is disconnected |
-| **AI advisor** | Click "Ask AI" for one concrete recommendation from Gemini, based on the current temperature/phase/biomass/pH (needs `GEMINI_API_KEY`, see below) |
+| **AI advisor** | Click "Ask AI" for one concrete recommendation from Gemini, based on the current temperature/phase/biomass/pH (needs `GEMINI_API_KEY`, see below). If `ELEVENLABS_API_KEY` is set, the advice is also spoken aloud, with a 🔊 Replay button |
 
 ### Real mode vs. Demo mode
 
@@ -89,9 +89,21 @@ Get a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apike
 
 ```bash
 export GEMINI_API_KEY=your-key-here
+# optional — tracks the current free-tier flash model (dated aliases 429 easily)
+export GEMINI_MODEL=gemini-flash-latest
 ```
 
 Without it, the "Ask AI" button just shows a clear "not configured" message — nothing else on the dashboard depends on this.
+
+**Voiceover (optional):** to have the advice spoken aloud, add an [ElevenLabs](https://elevenlabs.io) key:
+
+```bash
+export ELEVENLABS_API_KEY=your-key-here
+# optional — a free-tier voice id ("Matilda"); premade "library" voices need a paid plan
+export ELEVENLABS_VOICE_ID=XrExE9yKIg1WjnnlVkGX
+```
+
+> **Free-tier note:** ElevenLabs free accounts can't use premade "library" voices (Rachel, etc.) via the API — those return HTTP 402. Use one of your account's own available voice IDs (the default above is a free voice). Without an ElevenLabs key, the advice stays text-only.
 
 ## Hardware Setup
 
@@ -197,6 +209,7 @@ That opens the laptop's dashboard on the Pi monitor full-screen, while the lapto
 | **Python / FastAPI** | Dashboard backend — WebSocket telemetry, camera proxy, static files |
 | **Pillow** | Real-time ROI color extraction for the simulated pH indicator |
 | **google-genai** | Gemini AI advisor (current SDK — `google-generativeai` is deprecated) |
+| **elevenlabs** | Text-to-speech voiceover of the Gemini advice (optional) |
 | **Chart.js** | Biomass and specific growth-rate charts |
 | **Three.js** | Petri dish growth visualization (orthographic camera, `PointsMaterial` colony dots) |
 | **WebSocket + MJPEG** | Live telemetry and camera streaming to the browser |
@@ -229,6 +242,7 @@ BioReact-Pi/
     │   └── demo_telemetry.json   # Sample edge payload shape (reference only, not a live fallback)
     ├── api/                      # FastAPI — telemetry, camera, static files
     │   ├── advisor.py             # Gemini AI advisor
+    │   ├── voice.py               # ElevenLabs text-to-speech for the advice
     │   └── color_ph.py            # Real camera color -> simulated phenol-red pH
     └── dashboard/                # HTML / CSS / JS frontend
         ├── index.html

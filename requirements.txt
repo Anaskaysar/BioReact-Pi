@@ -20,5 +20,6 @@ python-dotenv>=1.0.0
 # current Gemini SDK.
 google-genai>=0.3.0
 
-# Voice (uncomment when wired)
-# elevenlabs
+# Voice — optional; ElevenLabs reads the Gemini advice aloud in the
+# dashboard. Without a key the advice stays text-only (see ui/api/voice.py).
+elevenlabs>=1.0.0
