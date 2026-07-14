@@ -6,30 +6,28 @@ Edge-AI bioreactor controller built on a Raspberry Pi. BioReact-Pi reads a live 
 
 ---
 
-## 🏆 Outcome
+## 🏆 Outcome — 3rd Place · QNX Hackathon Challenge · CU Hacking 2026
 
-> **3rd Place — QNX Hackathon Challenge at CU Hacking 2026 (Ottawa)**
+<p align="center">
+  <img src="docs/Project_Showcase.jpg" alt="Team Presentation" width="49%" />
+  <img src="docs/Winning_Prize.jpg"    alt="Winning Prize"     width="49%" />
+</p>
 
-<div align="center">
-  <img src="docs/Winning_Prize.jpg" alt="Winning Prize" width="700" style="border-radius: 10px;" />
-</div>
+<p align="center">
+  <img src="docs/Full_project.jpg"      alt="Full Project Setup"  width="49%" />
+  <img src="docs/Hardware_Complete.jpg" alt="Hardware Complete"   width="49%" />
+</p>
 
-<br/>
+<p align="center">
+  <img src="docs/Final_Dash.png" alt="Live Dashboard UI" width="100%" />
+</p>
 
-<table>
-  <tr>
-    <td><img src="docs/Full_project.jpg" alt="Full Project" height="200" style="border-radius: 8px;"/></td>
-    <td><img src="docs/Hardware_Complete.jpg" alt="Hardware Complete" height="200" style="border-radius: 8px;"/></td>
-  </tr>
-  <tr>
-    <td><img src="docs/Final_Dash.png" alt="Final Dashboard" height="200" style="border-radius: 8px;"/></td>
-    <td><img src="docs/Project_Showcase.jpg" alt="Project Showcase" height="200" style="border-radius: 8px;"/></td>
-  </tr>
-</table>
-
-### 🎬 Demo Video
-
-[![BioReact-Pi Demo](https://img.youtube.com/vi/ssAZ3tU2ldw/maxresdefault.jpg)](https://www.youtube.com/watch?v=ssAZ3tU2ldw)
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=ssAZ3tU2ldw">
+    <img src="https://img.youtube.com/vi/ssAZ3tU2ldw/hqdefault.jpg" alt="▶ Watch Demo" width="55%" />
+  </a><br/>
+  <sub>▶ Click to watch the live demo</sub>
+</p>
 
 ---
 
