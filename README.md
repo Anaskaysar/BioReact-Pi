@@ -1,4 +1,4 @@
-# BioReactPi : An EdgeAI Bioreactor Controller on Raspberry Pi · CU Hacking 2026 · 🥉 3rd Place
+# BioReactPi : An EdgeAI Bioreactor Controller on Raspberry Pi · CU Hacking 2026 · 🥉 3rd Place Overall
 
 <p align="justify">
 Edge-AI bioreactor controller built on a Raspberry Pi. BioReact-Pi reads a live temperature sensor inside the chamber, feeds it into a logistic growth model to predict bacterial biomass, and streams everything to a live web dashboard — including a top-down "petri dish" visualization where you can watch colonies grow in real time as you change the temperature.
@@ -6,7 +6,7 @@ Edge-AI bioreactor controller built on a Raspberry Pi. BioReact-Pi reads a live 
 
 ---
 
-## 🏆 Outcome — 3rd Place · CU Hacking 2026
+## 🏆 Outcome — 3rd Place Overall · CU Hacking 2026
 
 <p align="center">
   <img src="docs/Project_Showcase.jpg" alt="Team Presentation" width="49%" />
