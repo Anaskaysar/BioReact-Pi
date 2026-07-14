@@ -1,8 +1,37 @@
-# BioReact-Pi — Edge-AI Bioreactor Controller · CU Hacking 2026 · 🥉 3rd Place (QNX Hackathon Challenge)
+# BioReactPi : An EdgeAI Bioreactor Controller on Raspberry Pi · CU Hacking 2026 · 🥉 3rd Place (QNX Hackathon Challenge)
 
 <p align="justify">
 Edge-AI bioreactor controller built on a Raspberry Pi. BioReact-Pi reads a live temperature sensor inside the chamber, feeds it into a logistic growth model to predict bacterial biomass, and streams everything to a live web dashboard — including a top-down "petri dish" visualization where you can watch colonies grow in real time as you change the temperature.
 </p>
+
+---
+
+## 🏆 Outcome
+
+> **3rd Place — QNX Hackathon Challenge at CU Hacking 2026 (Ottawa)**
+
+<div align="center">
+  <img src="docs/Winning_Prize.jpg" alt="Winning Prize" width="700" style="border-radius: 10px;" />
+</div>
+
+<br/>
+
+<table>
+  <tr>
+    <td><img src="docs/Full_project.jpg" alt="Full Project" height="200" style="border-radius: 8px;"/></td>
+    <td><img src="docs/Hardware_Complete.jpg" alt="Hardware Complete" height="200" style="border-radius: 8px;"/></td>
+  </tr>
+  <tr>
+    <td><img src="docs/Final_Dash.png" alt="Final Dashboard" height="200" style="border-radius: 8px;"/></td>
+    <td><img src="docs/Project_Showcase.jpg" alt="Project Showcase" height="200" style="border-radius: 8px;"/></td>
+  </tr>
+</table>
+
+### 🎬 Demo Video
+
+[![BioReact-Pi Demo](https://img.youtube.com/vi/ssAZ3tU2ldw/maxresdefault.jpg)](https://www.youtube.com/watch?v=ssAZ3tU2ldw)
+
+---
 
 ## Overview
 
