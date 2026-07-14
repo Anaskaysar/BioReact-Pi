@@ -1,4 +1,4 @@
-# BioReact-Pi
+# BioReact-Pi — Edge-AI Bioreactor Controller · CU Hacking 2026 · 🥉 3rd Place (QNX Hackathon Challenge)
 
 <p align="justify">
 Edge-AI bioreactor controller built on a Raspberry Pi. BioReact-Pi reads a live temperature sensor inside the chamber, feeds it into a logistic growth model to predict bacterial biomass, and streams everything to a live web dashboard — including a top-down "petri dish" visualization where you can watch colonies grow in real time as you change the temperature.
@@ -246,16 +246,35 @@ BioReact-Pi/
 
 ## Team
 
-| Name | Role |
-|------|------|
-| Solarcemir | Hardware / embedded |
-| Arkesh | Growth model & control |
-| Anas | UI & digital twin |
-| Anna | Bio Med |
+| Name | Role | University |
+|------|------|------------|
+| Solarcemir | Hardware / embedded | University of Guelph |
+| Arkesh | Growth model & control | University of Guelph |
+| Anas | UI & digital twin | Laurentian University |
+| Anna | Bio Med | University of Guelph |
 
 <p align="justify">
 Hackathon pitch, judging alignment, demo script, and sponsor integrations: <a href="docs/PITCH.md">docs/PITCH.md</a>
 </p>
+
+**Project links:** [Devpost](https://devpost.com/software/bioreactpi-an-edgeai-bioreactor-controller-on-raspberry-pi?_gl=1*1qvzukt*_gcl_au*NDkyNDc2Nzk0LjE3ODI1Njc5MDA.*_ga*MjkyMDAyNDU4LjE3ODI1Njc5MDA.*_ga_0YHJK3Y10M*czE3ODM5ODg2MDUkbzE2JGcwJHQxNzgzOTg2ODA1JGo2MCRsMCRoMA..) · [GitHub](https://github.com/Anaskaysar/BioReact-Pi)
+
+## Gallery
+
+### 🏆 Winning Moment
+
+<div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+  <img src="docs/Winning_Prize.jpg" alt="Winning Prize" style="height: 220px; border-radius: 8px; object-fit: cover;" />
+</div>
+
+### 🔬 Project Build
+
+<div style="display: flex; gap: 12px; flex-wrap: wrap;">
+  <img src="docs/Full_project.jpg" alt="Full Project" style="height: 200px; border-radius: 8px; object-fit: cover;" />
+  <img src="docs/Hardware_Complete.jpg" alt="Hardware Complete" style="height: 200px; border-radius: 8px; object-fit: cover;" />
+  <img src="docs/Final_Dash.png" alt="Final Dashboard" style="height: 200px; border-radius: 8px; object-fit: cover;" />
+  <img src="docs/Project_Showcase.jpg" alt="Project Showcase" style="height: 200px; border-radius: 8px; object-fit: cover;" />
+</div>
 
 ## License
 
